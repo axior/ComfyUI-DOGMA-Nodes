@@ -1,14 +1,14 @@
 [project]
-name = "comfyui-wanvace-keyframeprep"
-description = "WAN VACE keyframe control video and mask preparation node for ComfyUI."
+name = "comfyui-dogma-nodes"
+description = "Custom ComfyUI nodes for DOGMA AI video workflows."
 version = "1.0.0"
 license = { file = "LICENSE" }
 dependencies = []
 
 [project.urls]
-Repository = "https://github.com/YOUR-USERNAME/ComfyUI-WanVACE-KeyframePrep"
+Repository = "https://github.com/axior/ComfyUI-DOGMA-Nodes"
 
 [tool.comfy]
 PublisherId = "YOUR-PUBLISHER-ID"
-DisplayName = "ComfyUI WanVACE Keyframe Prep"
+DisplayName = "DOGMA Nodes"
 Icon = ""
