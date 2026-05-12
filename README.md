@@ -61,13 +61,14 @@ frame_count         INT
 
 ## Install
 
-Copy the folder into:
+1. Open ComfyUI Manager
+2. Click “Install via Git URL”
+3. Paste:
 
-```text
-ComfyUI/custom_nodes/ComfyUI-WanVACE-KeyframePrep
-```
+https://github.com/axior/ComfyUI-DOGMA-Nodes
 
-Then restart ComfyUI.
+4. Click Install
+5. Restart ComfyUI
 
 ## Notes
 
