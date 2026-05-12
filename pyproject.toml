@@ -9,6 +9,6 @@ dependencies = []
 Repository = "https://github.com/axior/ComfyUI-DOGMA-Nodes"
 
 [tool.comfy]
-PublisherId = "YOUR-PUBLISHER-ID"
+PublisherId = "axior"
 DisplayName = "DOGMA Nodes"
 Icon = ""
