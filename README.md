@@ -1,10 +1,10 @@
-# ComfyUI WanVACE Keyframe Prep
+# DOGMA Nodes
 
-A minimal ComfyUI custom node for preparing **WAN VACE control video** and **control mask video** from an image-batch video, a mask-video batch, and one or more reference keyframes.
+Custom ComfyUI nodes for DOGMA AI video workflows.
 
-## Node
+## Nodes
 
-**WAN VACE Keyframe Control Prep**
+### WAN VACE Keyframe Control Prep
 
 Category:
 
@@ -12,9 +12,16 @@ Category:
 video/WAN VACE
 ```
 
-## What it does
+This node prepares a WAN VACE control video and control mask video from:
 
-The node takes a video batch, a mask-video batch, reference frames, and a list of keyframe indices. It replaces the selected video frames with the corresponding reference frames, turns the mask fully black at those same frames, and pads the result to a WAN VACE-compatible frame count.
+```text
+video             IMAGE batch
+mask_video        IMAGE batch
+reference_frames  IMAGE batch
+keyframe_indices  STRING
+```
+
+It replaces selected video frames with the corresponding reference frames, turns the mask fully black at those same frames, and pads the result to a WAN VACE-compatible frame count.
 
 WAN VACE expects frame counts in the form:
 
@@ -23,15 +30,6 @@ WAN VACE expects frame counts in the form:
 ```
 
 So the node pads the sequence by duplicating frames at the beginning and end, symmetrically, with preference for the beginning when the padding count is odd.
-
-## Inputs
-
-```text
-video             IMAGE batch
-mask_video        IMAGE batch
-reference_frames  IMAGE batch
-keyframe_indices  STRING
-```
 
 `keyframe_indices` supports comma, space, or semicolon separated values.
 
@@ -51,25 +49,56 @@ Indexing is **0-based**.
 end = last frame
 ```
 
-## Outputs
+Outputs:
 
 ```text
 control_video       IMAGE batch
 control_mask_video  IMAGE batch
 frame_count         INT
+padding_info        WANVACE_PAD_INFO
+```
+
+### WAN VACE Remove Added Padding
+
+Category:
+
+```text
+video/WAN VACE
+```
+
+This node removes the replicated start/end frames that were added by **WAN VACE Keyframe Control Prep**.
+
+Use it after WAN VACE generation when a later crop-and-stitch step needs the generated video to return to the original unpadded frame count.
+
+Inputs:
+
+```text
+video         IMAGE batch
+padding_info  WANVACE_PAD_INFO
+```
+
+Output:
+
+```text
+video        IMAGE batch
+frame_count  INT
+```
+
+Typical use:
+
+```text
+WAN VACE Keyframe Control Prep → padding_info
+WAN generated video            → WAN VACE Remove Added Padding
 ```
 
 ## Install
 
-1. Open ComfyUI Manager
-2. Click “Install via Git URL”
-3. Paste:
+Install through ComfyUI Manager as **DOGMA Nodes**, or with:
 
-https://github.com/axior/ComfyUI-DOGMA-Nodes
-
-4. Click Install
-5. Restart ComfyUI
+```text
+comfy node install comfyui-dogma-nodes
+```
 
 ## Notes
 
-The node uses only PyTorch, which is already part of a normal ComfyUI installation. No extra Python dependencies are required.
+The nodes use only PyTorch, which is already part of a normal ComfyUI installation. No extra Python dependencies are required.
