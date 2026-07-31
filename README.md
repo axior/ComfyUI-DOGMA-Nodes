@@ -91,6 +91,31 @@ WAN VACE Keyframe Control Prep → padding_info
 WAN generated video            → WAN VACE Remove Added Padding
 ```
 
+### DOGMA Sampler Select
+
+Category:
+
+```text
+sampling/custom_sampling/samplers
+```
+
+This node returns a DOGMA sampler as a `SAMPLER` object. Use it with `SamplerCustomAdvanced` and any `SIGMAS` source, including custom hand-drawn sigma curves.
+
+The same DOGMA samplers are also registered into normal ComfyUI sampler menus after restart, so they can appear in ordinary `KSampler`, `KSampler Advanced`, and `KSamplerSelect` dropdowns.
+
+Available samplers:
+
+| Sampler | Intended use | Approximate model calls |
+|---|---|---:|
+| `DOGMA_klein_distilled_REBUILD` | T2I, strong edit, heavily damaged upscale tile | `2 × non-final steps + 1` |
+| `DOGMA_klein_distilled_BALANCED` | General T2I / i2i / edit | `2 × non-final steps + 1` |
+| `DOGMA_klein_distilled_DETAIL` | Soft edit, good upscale tile, fine reconstruction | `3 × non-final steps + 1` |
+| `DOGMA_klein_basemodel_REBUILD` | Fast strong reconstruction, bad source anatomy or structure | `1 × steps` |
+| `DOGMA_klein_basemodel_BALANCED` | General base-model work with selective correction | Usually `1.2-1.35 × steps` |
+| `DOGMA_klein_basemodel_DETAIL` | Soft edit and upscale refinement; extra work at low sigma | Usually `1.4-1.5 × steps` |
+
+These are experimental ODE samplers designed around **FLUX.2 Klein 9B** workflows: three for the 4-6 step distilled model and three for the 20-50 step base model. No LoRA is included or required.
+
 ## Install
 
 Install through ComfyUI Manager as **DOGMA Nodes**, or with:
@@ -101,4 +126,4 @@ comfy node install comfyui-dogma-nodes
 
 ## Notes
 
-The nodes use only PyTorch, which is already part of a normal ComfyUI installation. No extra Python dependencies are required.
+The nodes use only PyTorch and ComfyUI's built-in sampler APIs. No extra Python dependencies are required.
