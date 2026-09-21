@@ -1,7 +1,7 @@
 [project]
 name = "comfyui-dogma-nodes"
 description = "Custom ComfyUI nodes for DOGMA AI video workflows."
-version = "1.0.6"
+version = "1.0.7"
 license = { file = "LICENSE" }
 dependencies = ["scipy>=1.10"]
 

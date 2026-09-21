@@ -1,3 +1,11 @@
+# DOGMA Nodes 1.0.7 — one VLM load per image list
+
+Use workflow V56.19. DOGMAVLMListV568 owns one ModernVLM worker per ordered image list, reuses its model sequentially, and clears its private model handle in a finally block. This removes the repeated reload/quantization caused by ordinary Comfy list mapping with unload_after=True. It does not retain a separate model cache per graph node. Empty lists load nothing; mismatched prompts fail before loading. Progress and per-image elapsed times are logged. Cancellation is checked before/after each image; an already-running ModernVLM generation must return before the next check.
+
+All 16 list-fed audit/caption nodes use the adapter. The single-image planner retains its ordinary unload behavior. Audit reasons are capped at 32 tokens and requested in six words. File selectors, diffusion settings, candidate counts and segmentation parameters are preserved. Requires the existing comfyui_vlm_nodes ModernVLM with clear_model API; no additional models. Publish this release, update DOGMA via Manager, restart ComfyUI, and load V56.19.
+
+59 CPU regression tests passed. Frontend import/export and graph wiring validated offline. No GPU benchmark or visual generation has been performed on the pod; further hardware/quantization bottlenecks remain possible.
+
 # DOGMA Nodes 1.0.6 — instance review and local recovery
 
 Workflow V56.18 keeps the supplied SimplePod model filenames and uses KJNodes for explicit memory cleanup. ModernVLM retains its own private-model lifecycle. Update through ComfyUI-Manager after this release is available in the Registry.
