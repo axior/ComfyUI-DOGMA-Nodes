@@ -1,4 +1,4 @@
-"""Install the reviewed DOGMA v1.0.5 release, keeping the old pack as backup."""
+"""Install the reviewed DOGMA v1.0.6 release, keeping the old pack as backup."""
 import ast
 import datetime
 import os
@@ -35,14 +35,14 @@ def locate():
 
 def main():
     root=locate();print('ComfyUI:',root,flush=True)
-    tag='v1.0.5'
+    tag='v1.0.6'
     with tempfile.TemporaryDirectory(prefix='.dogma-install-',dir=root) as td:
         stage=Path(td)/'repo'
         subprocess.run(['git','clone','--depth','1','--branch',tag,'https://github.com/axior/ComfyUI-DOGMA-Nodes.git',str(stage)],check=True)
         version=re.search(r'^version\s*=\s*"([^"]+)"',(stage/'pyproject.toml').read_text(),re.M).group(1)
-        if version!='1.0.5':raise RuntimeError('Versione inattesa: '+version)
+        if version!='1.0.6':raise RuntimeError('Versione inattesa: '+version)
         for p in stage.glob('*.py'):ast.parse(p.read_text(encoding='utf-8-sig'),filename=str(p))
-        if not (stage/'dogma_semantic_v566.py').is_file():raise RuntimeError('Manca il modulo corretto della fase 3.')
+        if not (stage/'dogma_semantic_v567.py').is_file():raise RuntimeError('Manca il modulo corretto della fase 3.')
         python=next((str(p) for p in [root/'.venv/bin/python',root/'venv/bin/python'] if p.is_file()),sys.executable)
         subprocess.run([python,'-m','pip','install','-r',str(stage/'requirements.txt')],check=True)
         backup=root/'.dogma_backups'/datetime.datetime.now().strftime('%Y%m%d_%H%M%S_%f')
@@ -57,8 +57,8 @@ def main():
             for old,dest in reversed(moved):
                 if not old.exists():dest.rename(old)
             raise
-        print('DOGMA 1.0.5 installato. Backup:',backup)
-    print('Riavvia ComfyUI dal pannello. Poi Ctrl+F5 e carica DOGMA_COMPLEX_V56_17_MASKS_CAPTIONS_LINUX.json.')
+        print('DOGMA 1.0.6 installato. Backup:',backup)
+    print('Riavvia ComfyUI dal pannello. Poi Ctrl+F5 e carica DOGMA_COMPLEX_V56_18_SIMPLEPOD_KJ_RECOVERY.json.')
 
 
 if __name__=='__main__':

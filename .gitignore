@@ -7,3 +7,6 @@ Thumbs.db
 .idea/
 .env
 .venv/
+
+# Registry CLI output is an artifact, never source.
+/node.zip

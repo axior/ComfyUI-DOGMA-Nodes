@@ -1,3 +1,11 @@
+# DOGMA Nodes 1.0.6 — instance review and local recovery
+
+Workflow V56.18 keeps the supplied SimplePod model filenames and uses KJNodes for explicit memory cleanup. ModernVLM retains its own private-model lifecycle. Update through ComfyUI-Manager after this release is available in the Registry.
+
+Phase 3 detects raw SAM masks with paired boxes, removes speckles without growing ownership, reviews each candidate separately, and searches four overlapping local views to recover missed targets. Valid detections survive rejection of unrelated candidates. Duplicate detections and cross-category overlaps are removed. Captions describe actual crops. Inactive slots do not execute caption or diffusion; a selected visible category with no verified masks after both searches raises an explicit diagnostic instead of silently returning an empty result.
+
+This adds CPU-tested processing and workflow wiring; actual segmentation quality and GPU runtime still require validation on the user's pod. SAM/Qwen can fail. Instance-level review and local search require more analysis than a single category-wide verdict.
+
 # DOGMA Nodes 1.0.5 — Phase 3 mask and caption correction
 
 New opt-in V566 nodes provide per-crop declarative prompts, SAM box ownership cleanup, per-category visual audits, masked img2img latent encoding, and distance-feathered compositing with low-frequency color protection. Existing node IDs retain their behaviour. Use the DOGMA V56.17 workflow. CPU regression tests: `python tests/run.py` (requires pytest).
