@@ -1,3 +1,7 @@
+# DOGMA Nodes 1.0.5 — Phase 3 mask and caption correction
+
+New opt-in V566 nodes provide per-crop declarative prompts, SAM box ownership cleanup, per-category visual audits, masked img2img latent encoding, and distance-feathered compositing with low-frequency color protection. Existing node IDs retain their behaviour. Use the DOGMA V56.17 workflow. CPU regression tests: `python tests/run.py` (requires pytest).
+
 # DOGMA Nodes
 
 Custom ComfyUI nodes for DOGMA AI video workflows.
