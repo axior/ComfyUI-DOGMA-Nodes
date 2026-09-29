@@ -76,3 +76,9 @@ from .dogma_simplepod_v2 import NODE_CLASS_MAPPINGS as _V108, NODE_DISPLAY_NAME_
 NODE_CLASS_MAPPINGS.update(_V108)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V108_NAMES)
 del _V108, _V108_NAMES
+
+# DOGMA 1.0.9: coherent box-prompt masks and reserved recovery after partial success.
+from .dogma_semantic_v109 import NODE_CLASS_MAPPINGS as _V109, NODE_DISPLAY_NAME_MAPPINGS as _V109_NAMES
+NODE_CLASS_MAPPINGS.update(_V109)
+NODE_DISPLAY_NAME_MAPPINGS.update(_V109_NAMES)
+del _V109, _V109_NAMES
