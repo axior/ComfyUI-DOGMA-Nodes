@@ -70,3 +70,9 @@ from .dogma_semantic_v568 import NODE_CLASS_MAPPINGS as _V568, NODE_DISPLAY_NAME
 NODE_CLASS_MAPPINGS.update(_V568)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V568_NAMES)
 del _V568, _V568_NAMES
+
+# DOGMA 1.0.8: optional reference, lazy phase bypass and bounded native refinement.
+from .dogma_simplepod_v2 import NODE_CLASS_MAPPINGS as _V108, NODE_DISPLAY_NAME_MAPPINGS as _V108_NAMES
+NODE_CLASS_MAPPINGS.update(_V108)
+NODE_DISPLAY_NAME_MAPPINGS.update(_V108_NAMES)
+del _V108, _V108_NAMES
