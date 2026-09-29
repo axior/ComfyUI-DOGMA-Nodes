@@ -82,3 +82,9 @@ from .dogma_semantic_v109 import NODE_CLASS_MAPPINGS as _V109, NODE_DISPLAY_NAME
 NODE_CLASS_MAPPINGS.update(_V109)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V109_NAMES)
 del _V109, _V109_NAMES
+
+# DOGMA 1.0.10: restored text SAM refinement, broader coverage and grouped audits.
+from .dogma_semantic_v110 import NODE_CLASS_MAPPINGS as _V110, NODE_DISPLAY_NAME_MAPPINGS as _V110_NAMES
+NODE_CLASS_MAPPINGS.update(_V110)
+NODE_DISPLAY_NAME_MAPPINGS.update(_V110_NAMES)
+del _V110, _V110_NAMES
