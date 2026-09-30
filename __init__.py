@@ -108,3 +108,9 @@ from .dogma_control_v111 import register_routes as _register_v111
 _register_v111()
 del _register_v111
 WEB_DIRECTORY = "./web_v111"
+
+# Opt-in robust inventory used by workflow V5.1; existing V111 node IDs unchanged.
+from .dogma_planner_v112 import NODE_CLASS_MAPPINGS as _V112, NODE_DISPLAY_NAME_MAPPINGS as _V112_NAMES
+NODE_CLASS_MAPPINGS.update(_V112)
+NODE_DISPLAY_NAME_MAPPINGS.update(_V112_NAMES)
+del _V112, _V112_NAMES
