@@ -114,3 +114,9 @@ from .dogma_planner_v112 import NODE_CLASS_MAPPINGS as _V112, NODE_DISPLAY_NAME_
 NODE_CLASS_MAPPINGS.update(_V112)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V112_NAMES)
 del _V112, _V112_NAMES
+
+# Category-relative audit, opt-in workflow V5.3. Older workflows remain unchanged.
+from .dogma_audit_v114 import NODE_CLASS_MAPPINGS as _V114, NODE_DISPLAY_NAME_MAPPINGS as _V114_NAMES
+NODE_CLASS_MAPPINGS.update(_V114)
+NODE_DISPLAY_NAME_MAPPINGS.update(_V114_NAMES)
+del _V114, _V114_NAMES
