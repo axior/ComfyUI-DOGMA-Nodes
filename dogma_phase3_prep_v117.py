@@ -28,31 +28,31 @@ def vlm_settings():
 
 def inventory_prompt(limit):
     return f'''Produce a compact semantic inventory for editing this photograph.
-Group visible elements by WHAT THEY ARE, never by WHERE THEY ARE.
-Use broad families of COMPLETE OBJECTS and LARGE SURFACES. Merge foreground and background instances of the same family.
-The dominant foreground object must be represented as a WHOLE OBJECT, not just its decorative parts.
-For example, a cathedral and houses belong to "buildings"; its spires, windows, arches and roof are NOT separate families. A watch shop can have "clocks", "watches", "furniture". These are examples, not a required vocabulary.
-Other distinct objects and surfaces must have their own families: do not group a ground surface and lamps together just because they occupy the same place.
-Use only families supported by this image; invent no invisible objects. Fewer families is better than splitting parts. Maximum {limit} families.
-Each family needs 1 to 3 short singular English segmentation nouns, including the main whole object when it differs from generic instances. No adjectives, no locations, no names of parts. These nouns are internal searches, not extra selectable categories.
-Return ONLY JSON in this format: {{"groups":[{{"name":"family name","objects":["whole object noun","other whole object noun"]}}]}}'''
+First describe the overall scene and identify the COMPLETE foreground subject in one short sentence. Then derive targets from that scene description, not from a list of local details.
+Identify the main visible WHOLE OBJECT TYPES and LARGE SURFACES, including the dominant foreground subject and the ground when visible.
+Each target will receive its OWN mask and editing description. Separate visually and functionally different object types even if they share a broad parent family. Never collapse distinct subtypes into an umbrella category.
+Keep attached components and decorative details with the COMPLETE object they belong to. Replace a cluster of visible parts with the name of their whole object, even if it is partly outside the frame. A component is not an independent scene subject.
+Use image-dependent vocabulary only. Name the specific visible type without guessing proper names, locations, historical identities or invisible objects.
+Repeated instances of the SAME type may share one name; they will be masked separately. Distinct types must have distinct names. Do not also list their broad parent type.
+Do not fill a quota. Maximum {limit} targets. Each name must be a short English noun phrase suitable for text segmentation, with no positional descriptions.
+Return ONLY JSON with two keys: "scene" (one short sentence) and "targets" (an array of distinct whole-object or surface names). No other text.'''
 
 
 def parse_groups(text, limit):
-    """Open vocabulary; explicit semantic groups, never treat location columns as queries."""
+    """One image-derived type per work target. Never union children of a family."""
     raw = lab().clean_inventory(text)
     try:
         value, end = json.JSONDecoder().raw_decode(raw)
     except (ValueError, TypeError) as exc:
-        raise ValueError('DOGMA: invalid semantic-group inventory. Expected JSON groups, not a list of parts. '
+        raise ValueError('DOGMA: invalid target inventory. Expected JSON targets, not semantic families. '
                          'Use Qwen 3 VL 4B or inspect RAW: ' + raw[:800]) from exc
     notes = []
     if raw[end:].strip():
         if raw[end:].strip() not in ('"', "'"):
             raise ValueError('DOGMA: unexpected text after semantic inventory: ' + raw[end:end+200])
         notes.append('Ignored a trailing quote after the complete JSON object.')
-    if not isinstance(value, dict) or not isinstance(value.get('groups'), list):
-        raise ValueError('DOGMA: expected a JSON object with a groups array.')
+    if not isinstance(value, dict) or not isinstance(value.get('targets'), list):
+        raise ValueError('DOGMA: expected a JSON targets array. Old grouped inventories must be regenerated.')
     groups = {}
     def noun(value):
         if not isinstance(value, str):
@@ -61,30 +61,36 @@ def parse_groups(text, limit):
         if not re.fullmatch(r'[a-z][a-z0-9 -]{0,79}', value) or len(value.split()) > 6:
             raise ValueError('DOGMA: invalid short noun in inventory: ' + value[:100])
         return value
-    for row in value['groups'][:64]:
-        if not isinstance(row, dict):
-            raise ValueError('DOGMA: malformed semantic group.')
-        name = noun(row.get('name'))
-        objects = row.get('objects')
-        if not isinstance(objects, list) or not objects:
-            raise ValueError('DOGMA: group needs complete-object searches: ' + name)
-        targets = [noun(obj) for obj in objects]
-        group = groups.setdefault(name, [])
-        for target in [name, *targets]:
-            if target not in group:
-                group.append(target)
+    for row in value['targets'][:64]:
+        name = noun(row)
+        if name in groups:
+            notes.append('Repeated target name removed: ' + name)
+        groups[name] = name
     result = []
-    for name, targets in groups.items():
-        # One generic family query plus up to three image-derived object queries.
-        if len(targets) > 4:
-            notes.append(f'{name}: internal search budget reached; {len(targets)-4} targets omitted.')
-        queries = targets[:4]
-        result.append(dict(category=name,query=queries[0],queries=queries,evidence='Qwen semantic family'))
+    for name in groups:
+        result.append(dict(category=name,query=name,queries=[name],target_id=f't{len(result)+1:03d}',evidence='Qwen independent object type'))
     if len(result) > limit:
-        notes.append(f'Category budget: {len(result)-limit} groups omitted; increase max_categories.')
-    if len(value['groups']) > 64:
-        notes.append('Inventory row limit reached; excess groups omitted.')
+        notes.append(f'Target budget: omitted {", ".join(r["category"] for r in result[limit:])}; increase max_categories.')
+    if len(value['targets']) > 64:
+        notes.append('Inventory row limit reached; excess targets omitted.')
     return result[:limit], notes
+
+
+def consolidate_prompt(draft, limit):
+    cleaned = lab().clean_inventory(draft)
+    try:
+        observation,_ = json.JSONDecoder().raw_decode(cleaned)
+        scene = observation['scene']
+        if not isinstance(scene,str) or not scene.strip():
+            raise ValueError('empty scene')
+    except (ValueError,KeyError,TypeError) as exc:
+        raise ValueError('DOGMA: missing overall scene description; inspect the visual draft.') from exc
+    return (f'Extract the different complete object types and large surfaces from this scene description. '
+            'Use short singular English nouns. If the description mentions parts belonging to an object, '
+            'name that OBJECT, not its parts. Keep different object types separate. Include the visible ground surface. '
+            'No adjectives, no positions, no proper names, no invented objects. '
+            f'Maximum {limit} entries, fewer is better. Return only JSON with a "targets" array of strings.\n'
+            'SCENE DESCRIPTION:\n'+scene)
 
 
 def row_queries(row):
@@ -92,7 +98,7 @@ def row_queries(row):
 
 
 def merge_instance_masks(kept, candidate):
-    """Merge alternate-query duplicates without clipping or filling their silhouettes."""
+    """Deduplicate near-identical detections without growing their silhouettes."""
     import torch
     for index, previous in enumerate(kept):
         if torch.equal(previous, candidate):
@@ -100,7 +106,6 @@ def merge_instance_masks(kept, candidate):
         intersection = (previous.bool() & candidate.bool()).sum().item()
         union = (previous.bool() | candidate.bool()).sum().item()
         if intersection / max(1, union) >= .9:
-            kept[index] = previous.bool() | candidate.bool()
             return True
     kept.append(candidate)
     return False
@@ -165,7 +170,7 @@ class DOGMAPrepPlanV117:
         req = dict(image=('IMAGE',), **vlm_settings())
         req.update(mode=(['auto_once', 'manual'],),
                    manual_categories=('STRING', {'multiline': True, 'default': ''}),
-                   max_categories=('INT', {'default': 8, 'min': 1, 'max': 24}),
+                   max_categories=('INT', {'default': 12, 'min': 1, 'max': 24}),
                    planner_side=('INT', {'default': 1024, 'min': 512, 'max': 2048, 'step': 128}),
                    max_tokens=('INT', {'default': 320, 'min': 128, 'max': 2048}),
                    rerun=('INT', {'default': 0, 'min': 0, 'max': 999999}))
@@ -173,11 +178,11 @@ class DOGMAPrepPlanV117:
     RETURN_TYPES = ('DOGMA_PREP_PLAN', 'STRING')
     RETURN_NAMES = ('plan', 'inventory_and_time')
     FUNCTION = 'run'
-    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.19'
+    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.20'
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        return 'semantic-families-119-v1'
+        return 'independent-targets-120-v2'
 
     def run(self, image, model, custom_model_id, memory_mode, mode, manual_categories,
             max_categories, planner_side, max_tokens, rerun):
@@ -185,23 +190,31 @@ class DOGMAPrepPlanV117:
         lab().interrupted()
         prompt = inventory_prompt(max_categories)
         raw = manual_categories
+        draft = ''
         if mode == 'auto_once':
             worker = node('ModernVLM')()
             try:
-                raw = worker.run(image=lab().resize_image(image, planner_side), prompt=prompt,
+                draft = worker.run(image=lab().resize_image(image, planner_side), prompt=prompt,
                                  model=model, custom_model_id=custom_model_id, memory_mode=memory_mode,
                                  max_new_tokens=max_tokens, temperature=0., top_p=.9, enable_thinking=False,
                                  unload_after=False, stream_output=True,
                                  system_prompt='You identify major regions in photographs. Return a compact JSON object and stop.')[0]
+                raw = worker.run(image=lab().resize_image(image,512),prompt=consolidate_prompt(draft,max_categories),
+                                 model=model, custom_model_id=custom_model_id, memory_mode=memory_mode,
+                                 max_new_tokens=max_tokens, temperature=0., top_p=.9, enable_thinking=False,
+                                 unload_after=False, stream_output=True,
+                                 system_prompt='Normalize the supplied visual observation into whole-object targets. Output JSON only.')[0]
             finally:
                 worker.clear_model()
         rows, notes = parse_groups(raw, max_categories) if mode == 'auto_once' else parse_open(raw, max_categories, automatic=False)
+        for index,row in enumerate(rows,1):
+            row['target_id'] = f't{index:03d}'
         elapsed = time.perf_counter()-started
-        plan = dict(rows=rows, seconds=elapsed, raw=raw, notes=notes, mode=mode,
-                    vlm_calls=int(mode == 'auto_once'), max_categories=max_categories, max_tokens=max_tokens)
+        plan = dict(schema=2,rows=rows, seconds=elapsed, raw=raw, visual_draft=draft, notes=notes, mode=mode,
+                    vlm_calls=2*int(mode == 'auto_once'), max_categories=max_categories, max_tokens=max_tokens)
         report = f'{len(rows)} dynamic categories; {elapsed:.2f}s including model lifetime; {plan["vlm_calls"]} Qwen call(s).\n'
         report += '\n'.join(f'{i+1}. {r["category"]} -> internal SAM searches: '+', '.join(row_queries(r)) for i,r in enumerate(rows))
-        return plan, report+'\n'+'\n'.join(notes)+'\nRAW:\n'+raw
+        return plan, report+'\nOne visual observation + one compact normalization with 512px visual context, same worker; no per-mask audits.\n'+'\n'.join(notes)+'\nRAW:\n'+raw+'\nVISUAL DRAFT:\n'+draft
 
 
 def cards(image, entries):
@@ -249,6 +262,8 @@ class DOGMAPrepMasksBV117:
             max_mask_coverage, min_box_agreement, rerun, model=None, clip=None):
         import torch
         from nodes import CLIPTextEncode
+        if plan.get('schema') != 2 or any(len(row_queries(r)) != 1 for r in plan['rows']):
+            raise ValueError('DOGMA: regenerate the inventory with 1.0.20. Each work target requires one independent query.')
         started = time.perf_counter()
         source = lab().resize_image(image, analysis_side)
         h,w = source.shape[1:3]
@@ -295,9 +310,12 @@ class DOGMAPrepMasksBV117:
                                 reasons.append(why)
                                 continue
                             if merge_instance_masks(kept,item['mask']):
-                                reasons.append('duplicate alternate-query instance merged')
+                                reasons.append('near-identical detection omitted; original silhouette retained')
                         masks = torch.stack(kept).float() if kept else torch.zeros((0,h,w))
-                        entries.append(dict(slot=slot,name=row['category'],query=row['query'],masks=masks,active=bool(kept)))
+                        target_id = row['target_id']
+                        entries.append(dict(slot=slot,name=row['category'],query=row['query'],target_id=target_id,
+                                            instance_ids=[f'{target_id}:i{i+1:03d}' for i in range(len(kept))],
+                                            masks=masks,active=bool(kept)))
                         lab().sync()
                         stats.append(dict(category=row['category'],query=row['query'],queries=query_counts,detected=len(detected),kept=len(kept),
                                           seconds=time.perf_counter()-tick,reasons=reasons))
@@ -305,7 +323,7 @@ class DOGMAPrepMasksBV117:
                     session.clear()
         elapsed = time.perf_counter()-started
         report = (f'B: {elapsed:.2f}s including image resize, text/model setup and first image encoding ({shared:.2f}s shared). '
-                  f'One SAM image encoding, {len(encodings)} unique text searches across {len(plan["rows"])} groups. '
+                  f'One SAM image encoding, {len(encodings)} unique text searches across {len(plan["rows"])} independent targets. '
                   f'Analysis {w}x{h}; original {image.shape[2]}x{image.shape[1]}.\n'
                   'Geometry guards are NOT semantic verification. No per-mask Qwen audits or recursive recovery.\n')
         report += '\n'.join(f'{s["category"]}: {s["kept"]}/{s["detected"]} masks; {s["seconds"]:.2f}s; '+ '; '.join(s['reasons']) for s in stats)
@@ -313,14 +331,18 @@ class DOGMAPrepMasksBV117:
             queries = ', '.join(repr(r['query']) for r in plan['rows'])
             raise ValueError('DOGMA: inventory produced no usable masks; this is not a user selection. '
                              'Check category names and SAM queries before retrying. Queries: ' + queries + '\n' + report)
-        bundle = dict(entries=entries,shape=tuple(image.shape[1:3]),image=image,plan=plan,mask_stats=stats,mask_seconds=elapsed)
+        bundle = dict(schema=2,entries=entries,shape=tuple(image.shape[1:3]),image=image,plan=plan,mask_stats=stats,mask_seconds=elapsed)
         return bundle,cards(image,entries),report
 
 
 def assign_ownership(selection, policy):
     import torch
+    if selection.get('schema') != 2:
+        raise ValueError('DOGMA: old grouped masks cannot be used as independent targets. Regenerate inventory and masks.')
+    if policy != 'smaller_regions_first':
+        raise ValueError('DOGMA: overlap is disabled in this isolated-target preparation. Select smaller_regions_first.')
     entries = [dict(e,masks=e['masks'].bool().clone()) for e in selection['entries']
-               if e['active'] and e['slot'] in set(selection['selected'])]
+               if e['active']]
     notes = []
     if policy == 'smaller_regions_first' and entries:
         occupied = torch.zeros_like(entries[0]['masks'][0])
@@ -328,28 +350,85 @@ def assign_ownership(selection, policy):
         for e in ordered:
             before = int(e['masks'].any(0).sum())
             e['masks'] &= ~occupied
-            e['masks'] = e['masks'][e['masks'].flatten(1).any(1)]
-            if len(e['masks']):
+            if bool(e['masks'].any()):
                 occupied |= e['masks'].any(0)
-            after = int(e['masks'].any(0).sum()) if len(e['masks']) else 0
-            notes.append(f'{e["name"]}: {before-after} overlap pixels assigned to smaller selected categories.')
+            after = int(e['masks'].any(0).sum())
+            notes.append(f'{e["name"]}: {before-after} overlap pixels assigned to smaller detected targets (including unselected). Geometry is not semantic verification.')
     for e in entries:
-        e['active'] = bool(len(e['masks']))
+        # Isolate detections within the same type too. Never caption a category union.
+        occupied = torch.zeros_like(e['masks'][0])
+        for index in sorted(range(len(e['masks'])),key=lambda i:(int(e['masks'][i].sum()),i)):
+            e['masks'][index] &= ~occupied
+            occupied |= e['masks'][index]
+        e['active'] = bool(e['masks'].any())
         e['masks'] = e['masks'].float()
-    return entries,notes
+    return [e for e in entries if e['slot'] in set(selection['selected'])],notes
+
+
+def target_caption_instruction(name):
+    return (f'Describe ONLY the visible masked target: {name}. The surrounding scene has been replaced '
+            'by an artificial neutral gray background; ignore that background and cutout edges. '
+            'Write 35 to 65 words about this target: visible shape, material, color, surface detail and illumination. '
+            'Describe a partial view as partial. Do not describe nearby objects, a city scene or the original surroundings. '
+            'Do not guess names, history, location, camera, invisible details or the material if unclear. '
+            'First decide whether the visible pixels support the requested object type. '
+            'If inconsistent, too dark or ambiguous, set matches_target to false; do not invent a plausible description. '
+            'Do not describe the artificial cutout shape as the real object shape. Do not infer viewpoint or sunlight. '
+            'Return ONLY JSON with "matches_target" (boolean) and "caption" (a factual target description, '
+            'or an empty string when uncertain).')
+
+
+def caption_request(job, day_night):
+    lighting = {'night':'Known source context: NIGHT. Do not attribute light to the sun or daylight.',
+                'day':'Known source context: DAY. Do not invent the light direction or source.',
+                'off':'Do not guess the time of day or source of illumination.'}[day_night]
+    return job['caption_instruction']+'\n'+lighting
+
+
+def parse_target_caption(raw):
+    """A review result has no executable edit prompt; malformed output is also review-only."""
+    cleaned = lab().clean_inventory(raw)
+    try:
+        data = json.loads(cleaned)
+    except (ValueError,TypeError):
+        return '', 'Invalid target-caption JSON; review required.'
+    if not isinstance(data,dict) or type(data.get('matches_target')) is not bool:
+        return '', 'Missing target assessment; review required.'
+    if not data['matches_target']:
+        return '', 'Target not confidently recognized in the masked crop; review required.'
+    if not isinstance(data.get('caption'),str):
+        return '', 'Missing target description; review required.'
+    clean = node('DOGMAChunkPromptV566')._declarative(data['caption'])
+    if len(clean.split()) < 4:
+        return '', 'Unusable target description; review required.'
+    return clean, ''
+
+
+def target_caption_image(job, side):
+    """Neutralize all non-target pixels; keep target colors and render input unchanged."""
+    import torch
+    mask = job['mask'].bool()
+    yy,xx = torch.where(mask[0])
+    if not len(xx):
+        raise ValueError('DOGMA: empty caption target.')
+    h,w = mask.shape[-2:]
+    x0,x1 = max(0,int(xx.min())-8),min(w,int(xx.max())+9)
+    y0,y1 = max(0,int(yy.min())-8),min(h,int(yy.max())+9)
+    target = torch.where(mask[...,None].to(job['image'].device),job['image'],.5)
+    return lab().resize_image(target[:,y0:y1,x0:x1],side)
 
 
 class DOGMAPrepCropsV117:
     @classmethod
     def INPUT_TYPES(cls):
         return {'required': dict(selection=('DOGMA_CATEGORIES',),
-            overlap_policy=(['smaller_regions_first','allow_overlap'],),
+            overlap_policy=(['smaller_regions_first'],),
             target_long_side=('INT',{'default':2048,'min':512,'max':4096,'step':32}),
             group_gap_px=('INT',{'default':180,'min':0,'max':1200}),
             context_px=('INT',{'default':160,'min':32,'max':640,'step':32}),
-            max_objects_per_chunk=('INT',{'default':6,'min':1,'max':20}),
-            max_chunks_per_category=('INT',{'default':12,'min':1,'max':24}),
-            max_total_crops=('INT',{'default':24,'min':1,'max':96}))}
+            max_objects_per_chunk=('INT',{'default':1,'min':1,'max':1}),
+            max_chunks_per_category=('INT',{'default':24,'min':1,'max':24}),
+            max_total_crops=('INT',{'default':48,'min':1,'max':96}))}
     RETURN_TYPES = ('DOGMA_PREP_CROPS','IMAGE','STRING')
     RETURN_NAMES = ('crop_jobs','selected_masks_after_ownership','crop_geometry_and_time')
     FUNCTION = 'run'
@@ -358,6 +437,8 @@ class DOGMAPrepCropsV117:
     def run(self,selection,overlap_policy,target_long_side,group_gap_px,context_px,
             max_objects_per_chunk,max_chunks_per_category,max_total_crops):
         import math
+        import torch
+        import torch.nn.functional as F
         started = time.perf_counter()
         entries,notes = assign_ownership(selection,overlap_policy)
         active = [e for e in entries if e['active']]
@@ -370,24 +451,51 @@ class DOGMAPrepCropsV117:
                 continue
             # Share the bounded workload across remaining selected categories.
             allowance = min(max_chunks_per_category,math.ceil(remaining/(len(active)-index)))
-            kind,instruction,_ = node('DOGMADenoiseCategoryV566')().build(e['name'],'')
-            crops,masks,metadata,info = node('DOGMAObjectNativeCropsV111')().make(
-                selection['image'],e['masks'],e['name'],kind,target_long_side,group_gap_px,context_px,
-                max_objects_per_chunk,allowance,.5)
-            details.append(info)
-            for crop,mask,meta in zip(crops,masks,metadata):
-                if meta.get('noop') or not bool(mask.any()):
+            kind,_,_ = node('DOGMADenoiseCategoryV566')().build(e['name'],'')
+            candidates = [i for i,m in enumerate(e['masks']) if bool(m.any())]
+            # Stable, largest detections first; budget exhaustion is explicit, never a merge.
+            candidates.sort(key=lambda i:(-int(e['masks'][i].sum()),i))
+            used = 0
+            for position,instance in enumerate(candidates):
+                instance_id = e['instance_ids'][instance]
+                left = allowance-used
+                if left <= 0:
+                    details.append(f'{e["name"]} {instance_id}: DEFERRED, crop budget reached.')
                     continue
-                assert crop.shape[1]>=meta['height'] and crop.shape[2]>=meta['width']
-                inp,blend,_,_,_ = node('DOGMADualMaskV566')().build(mask,kind)
-                jobs.append(dict(id=len(jobs)+1,slot=e['slot'],category=e['name'],kind=kind,
-                                 image=crop,mask=blend,inpaint=inp,metadata=meta,caption_instruction=instruction))
+                instance_budget = max(1,math.ceil(left/(len(candidates)-position)))
+                instance_mask = e['masks'][instance:instance+1]
+                crops,masks,metadata,info = node('DOGMAObjectNativeCropsV111')().make(
+                    selection['image'],instance_mask,e['name'],kind,target_long_side,0,context_px,
+                    1,instance_budget,.5)
+                details.append(instance_id+': '+info)
+                native = F.interpolate(instance_mask[:,None],size=selection['image'].shape[1:3],mode='nearest')[:,0]
+                for crop,mask,meta in zip(crops,masks,metadata):
+                    if meta.get('noop') or not bool(mask.any()):
+                        continue
+                    assert crop.shape[1]>=meta['height'] and crop.shape[2]>=meta['width']
+                    inp,blend,_,_,_ = node('DOGMADualMaskV566')().build(mask,kind)
+                    x,y,w,h = (meta[k] for k in ('x','y','width','height'))
+                    pr,pb = meta['pad_right'],meta['pad_bottom']
+                    rh,rw = crop.shape[1]-pb,crop.shape[2]-pr
+                    support = F.interpolate(native[:,None,y:y+h,x:x+w],size=(rh,rw),mode='nearest')[:,0]
+                    support = F.pad(support,(0,pr,0,pb))
+                    # Noise support may cross a tile core, never the owning object's silhouette.
+                    inp *= support
+                    blend *= support
+                    meta = dict(meta,target_id=e['target_id'],instance_id=instance_id,query=e['query'],members=1)
+                    jobs.append(dict(id=len(jobs)+1,slot=e['slot'],category=e['name'],kind=kind,
+                                     target_id=e['target_id'],instance_id=instance_id,query=e['query'],
+                                     image=crop,mask=blend,inpaint=inp,metadata=meta,
+                                     caption_instruction=target_caption_instruction(e['name'])))
+                    used += 1
         elapsed = time.perf_counter()-started
-        bundle = dict(jobs=jobs,plan=selection['plan'],mask_stats=selection['mask_stats'],
+        bundle = dict(schema=2,jobs=jobs,plan=selection['plan'],mask_stats=selection['mask_stats'],
                       mask_seconds=selection['mask_seconds'],crop_seconds=elapsed,geometry=details,ownership=notes,
                       chosen=list(selection['selected']),max_total_crops=max_total_crops)
         report = (f'{len(jobs)} prepared crops; {elapsed:.2f}s. Native source pixels or upscale only. '
-                  f'Total crop budget {max_total_crops}; deferred regions are listed below.\n'+'\n'.join(notes+details))
+                  f'Total crop budget {max_total_crops}; deferred regions are listed below. '
+                  'One detection per crop; no category union. Noise and blend confined to the target. '
+                  'SAM detections can still contain semantic errors.\n'+'\n'.join(notes+details))
         return bundle,cards(selection['image'],entries),report
 
 
@@ -407,7 +515,8 @@ def crop_cards(jobs):
         for cell in (base,wide.expand(-1,-1,-1,3),mask.expand(-1,-1,-1,3),overlay):
             cells.append(F.pad(cell.movedim(-1,1),(0,384-w,0,384-h)).movedim(1,-1))
         banner = Image.new('RGB',(1536,40),(28,30,34))
-        ImageDraw.Draw(banner).text((8,12),f'{job["id"]:03d} {job["category"]} | crop / inpaint / blend / overlay',fill='white')
+        state = 'REVIEW REQUIRED | ' if job.get('review_reason') else ''
+        ImageDraw.Draw(banner).text((8,12),f'{job["id"]:03d} {job["category"]} {job["instance_id"]} | {state}crop / inpaint / blend / overlay',fill='white')
         title = torch.from_numpy(np.asarray(banner).copy()).float()[None]/255
         result.append(torch.cat([title,torch.cat(cells,2)],1))
     return torch.cat(result) if result else torch.zeros((1,64,192,3))
@@ -418,7 +527,7 @@ class DOGMAPrepDescribeV117:
     def INPUT_TYPES(cls):
         req = dict(crop_jobs=('DOGMA_PREP_CROPS',), **vlm_settings())
         req.update(caption_side=('INT',{'default':768,'min':384,'max':1536,'step':128}),
-                   caption_tokens=('INT',{'default':192,'min':64,'max':512}),
+                   caption_tokens=('INT',{'default':128,'min':64,'max':512}),
                    day_night=(['day','night','off'],),
                    style=('STRING',{'multiline':True,'default':'A cinematic keyframe from a high-end movie production. Shot on ARRI Alexa. Fine detail with restrained edge contrast, no sharpening halos or crunchy texture.'}),
                    project_context=('STRING',{'multiline':True,'default':'A documentary photograph taken in Italy during the 1970s.'}),
@@ -433,7 +542,9 @@ class DOGMAPrepDescribeV117:
     def run(self,crop_jobs,model,custom_model_id,memory_mode,caption_side,caption_tokens,
             day_night,style,project_context,save_reports,rerun):
         started = time.perf_counter()
-        jobs = crop_jobs['jobs']
+        if crop_jobs.get('schema') != 2:
+            raise ValueError('DOGMA: regenerate isolated target crops before captioning.')
+        jobs = [dict(j) for j in crop_jobs['jobs']]
         records = []
         if jobs:
             worker = node('ModernVLM')()
@@ -442,16 +553,17 @@ class DOGMAPrepDescribeV117:
                     lab().interrupted()
                     tick = time.perf_counter()
                     print(f'[DOGMA prep] Caption {job["id"]}/{len(jobs)}: {job["category"]}',flush=True)
-                    caption = worker.run(image=lab().resize_image(job['image'],caption_side),prompt=job['caption_instruction'],
+                    caption = worker.run(image=target_caption_image(job,caption_side),prompt=caption_request(job,day_night),
                         model=model,custom_model_id=custom_model_id,memory_mode=memory_mode,max_new_tokens=caption_tokens,
                         temperature=0.,top_p=.9,enable_thinking=False,unload_after=False,stream_output=True,
-                        system_prompt='Describe only the supplied crop. Do not invent objects, historical dates or camera settings.')[0]
-                    clean = node('DOGMAChunkPromptV566')._declarative(caption)
-                    if len(clean.split())<4:
-                        raise ValueError(f'DOGMA: unusable caption for crop {job["id"]}; no fabricated fallback prompt.')
+                        system_prompt='Assess and describe only the visible target on the neutral background. Return JSON. Do not invent context.')[0]
+                    clean,review_reason = parse_target_caption(caption)
+                    job['review_reason'] = review_reason
                     trigger = {'day':'QLCMDAY70','night':'QLCMNIGHT70','off':''}[day_night]
-                    prompt = '\n\n'.join(x.strip() for x in (trigger,style,project_context,clean) if x.strip())
-                    records.append(dict(id=job['id'],slot=job['slot'],category=job['category'],caption=clean,prompt=prompt,
+                    prompt = '\n\n'.join(x.strip() for x in (trigger,style,project_context,clean) if x.strip()) if not review_reason else ''
+                    records.append(dict(id=job['id'],slot=job['slot'],category=job['category'],
+                                        target_id=job['target_id'],instance_id=job['instance_id'],query=job['query'],
+                                        caption=clean,prompt=prompt,ready=not bool(review_reason),review_reason=review_reason,raw_caption=caption,
                                         metadata=job['metadata'],render_size=list(job['image'].shape[1:3]),
                                         caption_seconds=time.perf_counter()-tick))
             finally:
@@ -465,7 +577,8 @@ class DOGMAPrepDescribeV117:
                   f'Compute subtotal: {total:.2f}s. Excludes user selection wait, cached stages, checkpoint loader, previews and exports.\n'
                   'No diffusion model, CLIP conditioning, VAE encode/decode or sampling in this preparation test.\n'
                   'Planner and captions have separate worker lifetimes. Cached upstream times are retained, not new queue measurements.\n')
-        document = dict(version='1.0.19',inventory=crop_jobs['plan'],mask_stats=crop_jobs['mask_stats'],
+        report += f'{sum(r["ready"] for r in records)} ready target prompts; {sum(not r["ready"] for r in records)} require review and have NO edit prompt.\n'
+        document = dict(version='1.0.20',inventory=crop_jobs['plan'],mask_stats=crop_jobs['mask_stats'],
                         chosen=crop_jobs['chosen'],geometry=crop_jobs['geometry'],ownership=crop_jobs['ownership'],
                         crop_count=len(records),crop_seconds=crop_jobs['crop_seconds'],mask_seconds=crop_jobs['mask_seconds'],
                         caption_seconds=caption_seconds,compute_subtotal_seconds=total,records=records)
@@ -479,15 +592,15 @@ class DOGMAPrepDescribeV117:
             target.write_text(json.dumps(document,ensure_ascii=False,indent=2),encoding='utf-8')
             with (dest/(stem+'.csv')).open('w',encoding='utf-8-sig',newline='') as stream:
                 writer = csv.writer(stream)
-                writer.writerow(['crop','category','source_x','source_y','source_w','source_h','render_h','render_w','caption_seconds','prompt'])
+                writer.writerow(['crop','category','instance_id','ready','review_reason','source_x','source_y','source_w','source_h','render_h','render_w','caption_seconds','prompt'])
                 for r in records:
                     meta = r['metadata']
-                    writer.writerow([r['id'],r['category'],meta['x'],meta['y'],meta['width'],meta['height'],*r['render_size'],r['caption_seconds'],r['prompt']])
+                    writer.writerow([r['id'],r['category'],r['instance_id'],r['ready'],r['review_reason'],meta['x'],meta['y'],meta['width'],meta['height'],*r['render_size'],r['caption_seconds'],r['prompt']])
             report += 'Reports saved: '+str(target)+'\n'
         report += f'Caption, preview and export node total: {time.perf_counter()-started:.2f}s'
-        prompts = '\n\n--------------------\n\n'.join(f'CROP {r["id"]:03d} — {r["category"]}\n{r["prompt"]}' for r in records)
+        prompts = '\n\n--------------------\n\n'.join(f'CROP {r["id"]:03d} — {r["category"]} [{r["instance_id"]}]\n'+(r['prompt'] if r['ready'] else 'DA CONTROLLARE — nessun prompt: '+r['review_reason']) for r in records)
         return boards,prompts or 'No selected nonempty crops: no Qwen caption calls.',report
 
 
 NODE_CLASS_MAPPINGS = {c.__name__:c for c in (DOGMAPrepPlanV117,DOGMAPrepMasksBV117,DOGMAPrepCropsV117,DOGMAPrepDescribeV117)}
-NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V117',' 1.0.19') for k in NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V117',' 1.0.20') for k in NODE_CLASS_MAPPINGS}
