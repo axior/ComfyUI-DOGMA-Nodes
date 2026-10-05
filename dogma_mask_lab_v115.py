@@ -35,7 +35,8 @@ PLAN_PROMPT = '''Inspect the actual photograph. List up to eight distinct VISIBL
 Inspect ground and large surfaces first, then architecture and whole objects.
 Do not omit visible pavement just because it is dark. Do not infer people or vehicles.
 Avoid duplicates, object parts and categories such as light, reflections, shadows or image quality.
-One line per category, not per instance: category | short concrete segmentation noun | visible location.
+Use exactly TWO fields per line: category | visible location.
+One line per category TYPE, not per instance or location. Merge repeated types.
 Use English. Only visible categories, no quota, no JSON or explanation. NONE if nothing is identifiable.'''
 
 
@@ -66,17 +67,56 @@ def resize_image(image, side):
                          mode='bilinear', align_corners=False).movedim(1, -1).cpu()
 
 
+def clean_inventory(text):
+    raw = str(text)[:65536]
+    cleaned = re.sub(r'<think>.*?</think>', '', raw, flags=re.S | re.I)
+    if '<think>' in cleaned.lower():
+        cleaned = cleaned[:cleaned.lower().index('<think>')]
+    cleaned = re.sub(r'^\s*```(?:json|text)?\s*|\s*```\s*$', '', cleaned.strip(), flags=re.I)
+    return cleaned.strip()
+
+
 def parse_inventory(text):
     legacy = sys.modules[node('DOGMAProposeCategoriesV112').__module__]
-    rows, warnings = legacy.read_rows(text)
+    # A two-column row is category | location. Never use location as a SAM query.
+    cleaned = clean_inventory(text)
+    recovered = 0
+    if cleaned.lstrip().startswith(('[', '{')):
+        rows, warnings = legacy.read_rows(cleaned)
+    else:
+        rows = []
+        warnings = []
+        for line in cleaned.splitlines()[:128]:
+            line = re.sub(r'^\s*(?:[-*]|\d+[.)])\s*', '', line).strip()
+            if not line or line.upper() in ('NONE', 'NO CATEGORIES'):
+                continue
+            content = line[1:-1] if line.startswith('|') and line.endswith('|') else line
+            fields = [f.strip() for f in content.split('|')]
+            if fields[0].lower() in ('category', 'categories') or re.fullmatch(r'[\s:|\-]+', line):
+                continue
+            if len(fields) == 2 and re.fullmatch(r'[A-Za-z][A-Za-z -]{0,59}', fields[0]) and fields[1]:
+                rows.append(dict(category=fields[0], queries=[], evidence=fields[1]))
+                recovered += 1
+            elif len(fields) == 1 and SYNONYMS.get(fields[0].lower(), fields[0].lower()) in ALIASES:
+                rows.append(dict(category=fields[0], queries=[], evidence='Location not supplied by planner'))
+            else:
+                parsed, issues = legacy.read_rows(line)
+                rows.extend(parsed)
+                warnings.extend(issues)
+        if recovered:
+            warnings.append(f'Accepted {recovered} two-column category/location rows; segmentation queries derived from category, not location')
     result = []
     seen = set()
+    duplicates = 0
     for row in rows:
         if not isinstance(row, dict):
             continue
         cat = ' '.join(re.sub('[^a-zA-Z -]', ' ', str(row.get('category', ''))).lower().split())
         cat = SYNONYMS.get(cat, cat)
-        if not cat or cat in seen or cat in ('none', 'light', 'shadow', 'reflection', 'background'):
+        if cat in seen:
+            duplicates += 1
+            continue
+        if not cat or cat in ('none', 'light', 'shadow', 'reflection', 'background'):
             continue
         if len(cat) > 60:
             continue
@@ -93,10 +133,16 @@ def parse_inventory(text):
         seen.add(cat)
         if len(result) == 8:
             break
-    return result, warnings
+    if duplicates:
+        warnings.append(f'Merged {duplicates} repeated category rows')
+    return result, list(dict.fromkeys(warnings))
 
 
 class DOGMAMaskLabPlanV115:
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        # Stable across normal queues, but invalidates the pre-fix inventory.
+        return 'mask-lab-inventory-1.0.16'
     @classmethod
     def INPUT_TYPES(cls):
         schema = copy.deepcopy(node('ModernVLM').INPUT_TYPES())
@@ -111,7 +157,7 @@ class DOGMAMaskLabPlanV115:
     RETURN_TYPES = ('DOGMA_LAB_PLAN', 'STRING')
     RETURN_NAMES = ('plan', 'inventory_and_time')
     FUNCTION = 'run'
-    CATEGORY = 'DOGMA/Mask lab 1.0.15'
+    CATEGORY = 'DOGMA/Mask lab 1.0.16'
 
     def run(self, image, mode, manual_categories, planner_side, rerun,
             model, custom_model_id, memory_mode):
@@ -130,6 +176,10 @@ class DOGMAMaskLabPlanV115:
             finally:
                 worker.clear_model()
         items, warnings = parse_inventory(raw)
+        if not items and clean_inventory(raw).upper() not in ('NONE', '[]', 'NO CATEGORIES'):
+            raise ValueError('DOGMA Mask Lab: Qwen output contains no usable categories. '
+                             'SAM was not run. Use mode=manual with category | query | location, '
+                             'or change the planner model. RAW: ' + str(raw)[:800])
         elapsed = time.perf_counter() - start
         plan = dict(items=items, seconds=elapsed, raw=raw, warnings=warnings, mode=mode)
         report = (f'{mode}: {len(items)} categories; {elapsed:.2f}s including planner loading/cleanup. '
@@ -374,7 +424,7 @@ class DOGMAMaskLabRunV115:
         return {'required':req}
     RETURN_TYPES = ('DOGMA_LAB_RESULTS',)
     FUNCTION = 'run'
-    CATEGORY = 'DOGMA/Mask lab 1.0.15'
+    CATEGORY = 'DOGMA/Mask lab 1.0.16'
 
     def check_lazy_status(self, plan, model=None, clip=None, **kwargs):
         if not plan['items'] or not any(kwargs.get('run_'+x,True) for x in 'ABCDE'):
@@ -449,7 +499,7 @@ class DOGMAMaskLabReportV115:
     RETURN_TYPES = ('IMAGE','IMAGE','STRING')
     RETURN_NAMES = ('comparison_per_category','overview','timing_and_diagnostics')
     FUNCTION = 'build'
-    CATEGORY = 'DOGMA/Mask lab 1.0.15'
+    CATEGORY = 'DOGMA/Mask lab 1.0.16'
 
     def build(self, results, save_reports=True):
         import numpy as np
@@ -551,4 +601,4 @@ class DOGMAMaskLabReportV115:
 
 
 NODE_CLASS_MAPPINGS = {c.__name__:c for c in (DOGMAMaskLabPlanV115,DOGMAMaskLabRunV115,DOGMAMaskLabReportV115)}
-NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V115',' 1.0.15') for k in NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V115',' 1.0.16') for k in NODE_CLASS_MAPPINGS}
