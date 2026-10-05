@@ -28,14 +28,12 @@ def vlm_settings():
 
 def inventory_prompt(limit):
     return f'''Produce a compact semantic inventory for editing this photograph.
-First describe the overall scene and identify the COMPLETE foreground subject in one short sentence. Then derive targets from that scene description, not from a list of local details.
-Identify the main visible WHOLE OBJECT TYPES and LARGE SURFACES, including the dominant foreground subject and the ground when visible.
-Each target will receive its OWN mask and editing description. Separate visually and functionally different object types even if they share a broad parent family. Never collapse distinct subtypes into an umbrella category.
-Keep attached components and decorative details with the COMPLETE object they belong to. Replace a cluster of visible parts with the name of their whole object, even if it is partly outside the frame. A component is not an independent scene subject.
-Use image-dependent vocabulary only. Name the specific visible type without guessing proper names, locations, historical identities or invisible objects.
-Repeated instances of the SAME type may share one name; they will be masked separately. Distinct types must have distinct names. Do not also list their broad parent type.
-Do not fill a quota. Maximum {limit} targets. Each name must be a short English noun phrase suitable for text segmentation, with no positional descriptions.
-Return ONLY JSON with two keys: "scene" (one short sentence) and "targets" (an array of distinct whole-object or surface names). No other text.'''
+Survey the ENTIRE frame: foreground, middle distance, far background and all four image borders. Do not stop after identifying the main subject.
+Describe the overall scene in two sentences, then make TWO inventories:
+"objects": distinct types of complete visible objects. Keep different object types separate even if they share a broad family. Name the containing whole object rather than its attached components or decorative details, including partly visible whole objects.
+"surfaces": visible continuous environmental regions and background expanses. Include regions along image borders even if narrow, dark, distant or low in detail. These are independent editing regions, not object components or lighting effects.
+Use only what is visibly supported. Do not infer hidden regions or fill a quota. Use short English noun phrases, no proper names or positions. Combine duplicate names, never different object types.
+Maximum {limit} entries across both inventories. Return ONLY JSON with "scene" (two sentences), "objects" (array of names) and "surfaces" (array of names).'''
 
 
 def parse_groups(text, limit):
@@ -45,7 +43,7 @@ def parse_groups(text, limit):
         value, end = json.JSONDecoder().raw_decode(raw)
     except (ValueError, TypeError) as exc:
         raise ValueError('DOGMA: invalid target inventory. Expected JSON targets, not semantic families. '
-                         'Use Qwen 3 VL 4B or inspect RAW: ' + raw[:800]) from exc
+                         'Use the V5 Qwen 3 VL 8B preset or inspect RAW: ' + raw[:800]) from exc
     notes = []
     if raw[end:].strip():
         if raw[end:].strip() not in ('"', "'"):
@@ -81,16 +79,85 @@ def consolidate_prompt(draft, limit):
     try:
         observation,_ = json.JSONDecoder().raw_decode(cleaned)
         scene = observation['scene']
-        if not isinstance(scene,str) or not scene.strip():
-            raise ValueError('empty scene')
+        objects = observation['objects']
+        surfaces = observation['surfaces']
+        if not isinstance(scene,str) or not scene.strip() or not isinstance(objects,list) or not isinstance(surfaces,list):
+            raise ValueError('missing inventory')
+        if any(not isinstance(x,str) or not x.strip() for x in objects+surfaces):
+            raise ValueError('invalid inventory entry')
     except (ValueError,KeyError,TypeError) as exc:
-        raise ValueError('DOGMA: missing overall scene description; inspect the visual draft.') from exc
-    return (f'Extract the different complete object types and large surfaces from this scene description. '
-            'Use short singular English nouns. If the description mentions parts belonging to an object, '
-            'name that OBJECT, not its parts. Keep different object types separate. Include the visible ground surface. '
-            'No adjectives, no positions, no proper names, no invented objects. '
-            f'Maximum {limit} entries, fewer is better. Return only JSON with a "targets" array of strings.\n'
-            'SCENE DESCRIPTION:\n'+scene)
+        raise ValueError('DOGMA: missing full-frame object/surface inventory; inspect the visual draft.') from exc
+    return ('Normalize EVERY object AND surface candidate below into an independent editing target. '
+            'The two candidate lists are provisional observations, NOT an approved classification. '
+            'If it names an attached part, use the containing whole object supported by the scene. '
+            'When that containing object is already a candidate, reuse its EXACT normalized target name. '
+            'A structural support, decoration, or exterior surface attached to a larger object must map to '
+            'that whole object, even when mistakenly listed under surfaces. Do not create both part and whole '
+            'as editing targets. Preserve a part only if its containing object cannot be identified from the image. '
+            'Keep genuinely different complete object types separate. Do not collapse them into a parent family. '
+            'Keep independently visible environmental regions, including narrow or dark background regions. '
+            'Remove positional and lighting adjectives; invent no objects. A generic scene label is not an editing target. '
+            'Return ONLY JSON with an "objects" array of {"source":"exact candidate name","target":"whole object type"}. '
+            'For a nonphysical scene label or unsupported candidate use "target":null and a short "reason"; never silently omit it. '
+            'Account for every supplied candidate exactly once.\n'
+            'SCENE DESCRIPTION:\n'+scene+'\nOBJECT CANDIDATES:\n'+json.dumps(objects,ensure_ascii=False)
+            +'\nSURFACE CANDIDATES:\n'+json.dumps(surfaces,ensure_ascii=False))
+
+
+def normalized_inventory(draft, normalized, limit):
+    """Account for every observation, including surfaces; no summary-only loss."""
+    consolidate_prompt(draft,limit)  # Validate the complete first observation.
+    observation,_ = json.JSONDecoder().raw_decode(lab().clean_inventory(draft))
+    notes = []
+    candidates = observation['objects']+observation['surfaces']
+    def key(value):return ' '.join(value.lower().split())
+    originals = {key(x):x for x in candidates}
+    mapping = {}
+    try:
+        response = json.loads(lab().clean_inventory(normalized))
+        rewrites = response if isinstance(response,list) else response.get('objects') if isinstance(response,dict) else None
+        if not isinstance(rewrites,list):raise ValueError('missing object rewrites')
+        if isinstance(response,dict) and isinstance(response.get('surfaces'),list):
+            rewrites = rewrites+response['surfaces']
+        for row in rewrites:
+            if not isinstance(row,dict) or not isinstance(row.get('source'),str):
+                notes.append('Invalid object rewrite ignored; original candidate retained.')
+                continue
+            source = key(row['source'])
+            if source not in originals:
+                notes.append('Unsupported normalization source ignored: '+source)
+                continue
+            if row.get('target') is None and isinstance(row.get('reason'),str) and row['reason'].strip():
+                mapping[source] = None
+                notes.append(f'Explicitly excluded candidate {source}: {row["reason"][:200]}')
+                continue
+            try:
+                clean,_ = parse_groups(json.dumps({'targets':[row['target']]}),1)
+                if not clean:raise ValueError('empty rewrite')
+            except (ValueError,KeyError,TypeError):
+                notes.append('Invalid normalized name; original retained: '+source)
+                continue
+            if source in mapping and mapping[source]!=clean[0]['category']:
+                mapping[source] = key(originals[source])
+                notes.append('Conflicting rewrites; original retained: '+source)
+            else:
+                mapping[source] = clean[0]['category']
+    except (ValueError,TypeError):
+        notes.append('Normalization unusable; original observed candidates retained, review their granularity.')
+    targets = []
+    for original in candidates:
+        name = key(original)
+        if name not in mapping:
+            notes.append('Unaccounted object retained: '+name)
+        target = mapping.get(name,name)
+        if target is not None:
+            targets.append(target)
+    rows,parse_notes = parse_groups(json.dumps({'targets':targets}),limit)
+    surfaces = {mapping.get(key(x),key(x)) for x in observation['surfaces']}
+    for row in rows:
+        row['evidence'] = 'Full-frame surface observation' if row['category'] in surfaces else 'Normalized whole object'
+        row['observed_candidates'] = [x for x in candidates if mapping.get(key(x),key(x))==row['category']]
+    return rows,notes+parse_notes
 
 
 def row_queries(row):
@@ -172,17 +239,17 @@ class DOGMAPrepPlanV117:
                    manual_categories=('STRING', {'multiline': True, 'default': ''}),
                    max_categories=('INT', {'default': 12, 'min': 1, 'max': 24}),
                    planner_side=('INT', {'default': 1024, 'min': 512, 'max': 2048, 'step': 128}),
-                   max_tokens=('INT', {'default': 320, 'min': 128, 'max': 2048}),
+                   max_tokens=('INT', {'default': 640, 'min': 128, 'max': 2048}),
                    rerun=('INT', {'default': 0, 'min': 0, 'max': 999999}))
         return {'required': req}
     RETURN_TYPES = ('DOGMA_PREP_PLAN', 'STRING')
     RETURN_NAMES = ('plan', 'inventory_and_time')
     FUNCTION = 'run'
-    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.20'
+    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.21'
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        return 'independent-targets-120-v2'
+        return 'full-frame-candidate-accounting-121-v1'
 
     def run(self, image, model, custom_model_id, memory_mode, mode, manual_categories,
             max_categories, planner_side, max_tokens, rerun):
@@ -206,7 +273,7 @@ class DOGMAPrepPlanV117:
                                  system_prompt='Normalize the supplied visual observation into whole-object targets. Output JSON only.')[0]
             finally:
                 worker.clear_model()
-        rows, notes = parse_groups(raw, max_categories) if mode == 'auto_once' else parse_open(raw, max_categories, automatic=False)
+        rows, notes = normalized_inventory(draft,raw,max_categories) if mode == 'auto_once' else parse_open(raw, max_categories, automatic=False)
         for index,row in enumerate(rows,1):
             row['target_id'] = f't{index:03d}'
         elapsed = time.perf_counter()-started
@@ -214,7 +281,7 @@ class DOGMAPrepPlanV117:
                     vlm_calls=2*int(mode == 'auto_once'), max_categories=max_categories, max_tokens=max_tokens)
         report = f'{len(rows)} dynamic categories; {elapsed:.2f}s including model lifetime; {plan["vlm_calls"]} Qwen call(s).\n'
         report += '\n'.join(f'{i+1}. {r["category"]} -> internal SAM searches: '+', '.join(row_queries(r)) for i,r in enumerate(rows))
-        return plan, report+'\nOne visual observation + one compact normalization with 512px visual context, same worker; no per-mask audits.\n'+'\n'.join(notes)+'\nRAW:\n'+raw+'\nVISUAL DRAFT:\n'+draft
+        return plan, report+'\nFull-frame objects AND surfaces; every observed candidate accounted for during normalization. Two calls, same worker; no per-mask audits.\n'+'\n'.join(notes)+'\nRAW:\n'+raw+'\nVISUAL DRAFT:\n'+draft
 
 
 def cards(image, entries):
@@ -263,7 +330,7 @@ class DOGMAPrepMasksBV117:
         import torch
         from nodes import CLIPTextEncode
         if plan.get('schema') != 2 or any(len(row_queries(r)) != 1 for r in plan['rows']):
-            raise ValueError('DOGMA: regenerate the inventory with 1.0.20. Each work target requires one independent query.')
+            raise ValueError('DOGMA: regenerate the inventory with 1.0.21. Each work target requires one independent query.')
         started = time.perf_counter()
         source = lab().resize_image(image, analysis_side)
         h,w = source.shape[1:3]
@@ -578,7 +645,7 @@ class DOGMAPrepDescribeV117:
                   'No diffusion model, CLIP conditioning, VAE encode/decode or sampling in this preparation test.\n'
                   'Planner and captions have separate worker lifetimes. Cached upstream times are retained, not new queue measurements.\n')
         report += f'{sum(r["ready"] for r in records)} ready target prompts; {sum(not r["ready"] for r in records)} require review and have NO edit prompt.\n'
-        document = dict(version='1.0.20',inventory=crop_jobs['plan'],mask_stats=crop_jobs['mask_stats'],
+        document = dict(version='1.0.21',inventory=crop_jobs['plan'],mask_stats=crop_jobs['mask_stats'],
                         chosen=crop_jobs['chosen'],geometry=crop_jobs['geometry'],ownership=crop_jobs['ownership'],
                         crop_count=len(records),crop_seconds=crop_jobs['crop_seconds'],mask_seconds=crop_jobs['mask_seconds'],
                         caption_seconds=caption_seconds,compute_subtotal_seconds=total,records=records)
@@ -603,4 +670,4 @@ class DOGMAPrepDescribeV117:
 
 
 NODE_CLASS_MAPPINGS = {c.__name__:c for c in (DOGMAPrepPlanV117,DOGMAPrepMasksBV117,DOGMAPrepCropsV117,DOGMAPrepDescribeV117)}
-NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V117',' 1.0.20') for k in NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V117',' 1.0.21') for k in NODE_CLASS_MAPPINGS}
