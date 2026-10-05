@@ -120,3 +120,9 @@ from .dogma_audit_v114 import NODE_CLASS_MAPPINGS as _V114, NODE_DISPLAY_NAME_MA
 NODE_CLASS_MAPPINGS.update(_V114)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V114_NAMES)
 del _V114, _V114_NAMES
+
+# Opt-in mask laboratory; production workflows and older node IDs unchanged.
+from .dogma_mask_lab_v115 import NODE_CLASS_MAPPINGS as _LAB115, NODE_DISPLAY_NAME_MAPPINGS as _LAB115_NAMES
+NODE_CLASS_MAPPINGS.update(_LAB115)
+NODE_DISPLAY_NAME_MAPPINGS.update(_LAB115_NAMES)
+del _LAB115, _LAB115_NAMES
