@@ -607,7 +607,7 @@ class DOGMAPrepDescribeV117:
     CATEGORY = DOGMAPrepPlanV117.CATEGORY
 
     def run(self,crop_jobs,model,custom_model_id,memory_mode,caption_side,caption_tokens,
-            day_night,style,project_context,save_reports,rerun):
+            day_night,style,project_context,save_reports,rerun,_render_payload=False,_trigger=None):
         started = time.perf_counter()
         if crop_jobs.get('schema') != 2:
             raise ValueError('DOGMA: regenerate isolated target crops before captioning.')
@@ -627,10 +627,11 @@ class DOGMAPrepDescribeV117:
                     clean,review_reason = parse_target_caption(caption)
                     job['review_reason'] = review_reason
                     trigger = {'day':'QLCMDAY70','night':'QLCMNIGHT70','off':''}[day_night]
+                    if _trigger is not None:trigger=_trigger
                     prompt = '\n\n'.join(x.strip() for x in (trigger,style,project_context,clean) if x.strip()) if not review_reason else ''
                     records.append(dict(id=job['id'],slot=job['slot'],category=job['category'],
                                         target_id=job['target_id'],instance_id=job['instance_id'],query=job['query'],
-                                        caption=clean,prompt=prompt,ready=not bool(review_reason),review_reason=review_reason,raw_caption=caption,
+                                        caption=clean,prompt=prompt,ready=not bool(review_reason),review_reason=review_reason,raw_caption=caption,denoise=job.get('denoise'),
                                         metadata=job['metadata'],render_size=list(job['image'].shape[1:3]),
                                         caption_seconds=time.perf_counter()-tick))
             finally:
@@ -666,6 +667,9 @@ class DOGMAPrepDescribeV117:
             report += 'Reports saved: '+str(target)+'\n'
         report += f'Caption, preview and export node total: {time.perf_counter()-started:.2f}s'
         prompts = '\n\n--------------------\n\n'.join(f'CROP {r["id"]:03d} — {r["category"]} [{r["instance_id"]}]\n'+(r['prompt'] if r['ready'] else 'DA CONTROLLARE — nessun prompt: '+r['review_reason']) for r in records)
+        if _render_payload:
+            ready_jobs=[dict(job,**{k:record[k] for k in ('prompt','ready','review_reason','caption')}) for job,record in zip(jobs,records)]
+            return dict(crop_jobs,jobs=ready_jobs),boards,prompts or 'No selected crops.',report
         return boards,prompts or 'No selected nonempty crops: no Qwen caption calls.',report
 
 

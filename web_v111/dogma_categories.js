@@ -23,16 +23,20 @@ function showChoice(payload) {
   const selected = new Set();
   dialog = element("dialog", null, document.body);
   Object.assign(dialog.style, { width: "min(1400px,94vw)", maxHeight: "92vh", overflow: "auto", background: "#20252b", color: "#f3f4f6", border: "1px solid #617285", borderRadius: "12px", padding: "24px" });
-  element("h2", "Fase 3 — scegli le categorie da lavorare", dialog);
+  element("h2", "Fase 3 â€” scegli le categorie da lavorare", dialog);
   element("p", "Controlla originale, maschera e sovrapposizione. Seleziona le categorie desiderate: le altre non verranno renderizzate. Le proposte automatiche possono essere sbagliate.", dialog);
   const grid = element("div", null, dialog);
   Object.assign(grid.style, { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(420px,1fr))", gap: "16px" });
   const inputs = [];
+  const denoiseControls = new Map();
+  const hasDenoise = Number.isFinite(payload.default_denoise);
+  if (hasDenoise) element("p", `Denoise generale: ${payload.default_denoise.toFixed(2)}. Attiva un valore personalizzato solo per le categorie da modificare. 0 conserva i pixel originali.`, dialog);
   for (const category of payload.categories) {
-    const card = element("label", null, grid);
+    const card = element("div", null, grid);
+    const label = element("label", null, card);
     Object.assign(card.style, { display: "block", border: "2px solid #53606d", borderRadius: "8px", padding: "10px", cursor: "pointer" });
-    const input = element("input", null, card); input.type = "checkbox"; inputs.push([input, category.id]);
-    element("strong", ` ${category.id}. ${category.name}`, card);
+    const input = element("input", null, label); input.type = "checkbox"; inputs.push([input, category.id]);
+    element("strong", ` ${category.id}. ${category.name}`, label);
     const image = element("img", null, card);
     const params = new URLSearchParams({ filename: category.image.filename, subfolder: category.image.subfolder || "", type: category.image.type || "temp" });
     image.src = api.apiURL(`/view?${params}`); image.alt = `${category.name}: originale, maschera, sovrapposizione`;
@@ -50,9 +54,28 @@ function showChoice(payload) {
       zoom.addEventListener("cancel", (event) => { event.preventDefault(); close.click(); });
       zoom.showModal();
     };
+    if (hasDenoise) {
+      const row = element("div", null, card);
+      Object.assign(row.style, { marginTop: "12px", display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap" });
+      const customLabel = element("label", null, row);
+      const custom = element("input", null, customLabel); custom.type = "checkbox";
+      element("span", " Denoise personalizzato", customLabel);
+      const slider = element("input", null, row); slider.type = "range";
+      slider.min = "0"; slider.max = "1"; slider.step = "0.01"; slider.value = String(payload.default_denoise);
+      slider.setAttribute("aria-label", `Denoise ${category.name}`);
+      const value = element("output", null, row);
+      const refresh = () => {
+        custom.disabled = !input.checked;
+        slider.disabled = !input.checked || !custom.checked;
+        value.textContent = Number(custom.checked ? slider.value : payload.default_denoise).toFixed(2) + (custom.checked ? " personalizzato" : " generale");
+      };
+      custom.onchange = refresh; slider.oninput = refresh;
+      denoiseControls.set(category.id, { custom, slider, refresh }); refresh();
+    }
     input.addEventListener("change", () => {
       input.checked ? selected.add(category.id) : selected.delete(category.id);
       card.style.borderColor = input.checked ? "#6bc5c1" : "#53606d";
+      denoiseControls.get(category.id)?.refresh();
       update();
     });
   }
@@ -71,7 +94,9 @@ function showChoice(payload) {
   async function send(indices) {
     submit.disabled = true; skip.disabled = true;
     try {
-      const response = await api.fetchApi("/dogma/categories/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: payload.token, indices }) });
+      const body = { token: payload.token, indices };
+      if (hasDenoise) body.denoise_overrides = Object.fromEntries(indices.filter(id => denoiseControls.get(id)?.custom.checked).map(id => [String(id), Number(denoiseControls.get(id).slider.value)]));
+      const response = await api.fetchApi("/dogma/categories/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.message || "Selezione non accettata");
       closeChoice(payload.token);
