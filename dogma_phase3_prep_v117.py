@@ -27,12 +27,83 @@ def vlm_settings():
 
 
 def inventory_prompt(limit):
-    return (f'List at most {limit} different types of visible objects and surfaces in this image. '
-            'Use short English names. Look across the whole image, including foreground and background. '
-            'Include the ground surface when visible. Name complete objects rather than their parts. '
-            'Write each type only once, one name per line. '
-            'Do not write locations, descriptions, tables, or explanations. '
-            'Do not guess objects that are not visible. Write NONE if nothing is identifiable.')
+    return f'''Produce a compact semantic inventory for editing this photograph.
+Group visible elements by WHAT THEY ARE, never by WHERE THEY ARE.
+Use broad families of COMPLETE OBJECTS and LARGE SURFACES. Merge foreground and background instances of the same family.
+The dominant foreground object must be represented as a WHOLE OBJECT, not just its decorative parts.
+For example, a cathedral and houses belong to "buildings"; its spires, windows, arches and roof are NOT separate families. A watch shop can have "clocks", "watches", "furniture". These are examples, not a required vocabulary.
+Other distinct objects and surfaces must have their own families: do not group a ground surface and lamps together just because they occupy the same place.
+Use only families supported by this image; invent no invisible objects. Fewer families is better than splitting parts. Maximum {limit} families.
+Each family needs 1 to 3 short singular English segmentation nouns, including the main whole object when it differs from generic instances. No adjectives, no locations, no names of parts. These nouns are internal searches, not extra selectable categories.
+Return ONLY JSON in this format: {{"groups":[{{"name":"family name","objects":["whole object noun","other whole object noun"]}}]}}'''
+
+
+def parse_groups(text, limit):
+    """Open vocabulary; explicit semantic groups, never treat location columns as queries."""
+    raw = lab().clean_inventory(text)
+    try:
+        value, end = json.JSONDecoder().raw_decode(raw)
+    except (ValueError, TypeError) as exc:
+        raise ValueError('DOGMA: invalid semantic-group inventory. Expected JSON groups, not a list of parts. '
+                         'Use Qwen 3 VL 4B or inspect RAW: ' + raw[:800]) from exc
+    notes = []
+    if raw[end:].strip():
+        if raw[end:].strip() not in ('"', "'"):
+            raise ValueError('DOGMA: unexpected text after semantic inventory: ' + raw[end:end+200])
+        notes.append('Ignored a trailing quote after the complete JSON object.')
+    if not isinstance(value, dict) or not isinstance(value.get('groups'), list):
+        raise ValueError('DOGMA: expected a JSON object with a groups array.')
+    groups = {}
+    def noun(value):
+        if not isinstance(value, str):
+            raise ValueError('DOGMA: category names and object searches must be strings.')
+        value = ' '.join(value.lower().strip().split())
+        if not re.fullmatch(r'[a-z][a-z0-9 -]{0,79}', value) or len(value.split()) > 6:
+            raise ValueError('DOGMA: invalid short noun in inventory: ' + value[:100])
+        return value
+    for row in value['groups'][:64]:
+        if not isinstance(row, dict):
+            raise ValueError('DOGMA: malformed semantic group.')
+        name = noun(row.get('name'))
+        objects = row.get('objects')
+        if not isinstance(objects, list) or not objects:
+            raise ValueError('DOGMA: group needs complete-object searches: ' + name)
+        targets = [noun(obj) for obj in objects]
+        group = groups.setdefault(name, [])
+        for target in [name, *targets]:
+            if target not in group:
+                group.append(target)
+    result = []
+    for name, targets in groups.items():
+        # One generic family query plus up to three image-derived object queries.
+        if len(targets) > 4:
+            notes.append(f'{name}: internal search budget reached; {len(targets)-4} targets omitted.')
+        queries = targets[:4]
+        result.append(dict(category=name,query=queries[0],queries=queries,evidence='Qwen semantic family'))
+    if len(result) > limit:
+        notes.append(f'Category budget: {len(result)-limit} groups omitted; increase max_categories.')
+    if len(value['groups']) > 64:
+        notes.append('Inventory row limit reached; excess groups omitted.')
+    return result[:limit], notes
+
+
+def row_queries(row):
+    return list(dict.fromkeys(row.get('queries') or [row['query']]))[:4]
+
+
+def merge_instance_masks(kept, candidate):
+    """Merge alternate-query duplicates without clipping or filling their silhouettes."""
+    import torch
+    for index, previous in enumerate(kept):
+        if torch.equal(previous, candidate):
+            return True
+        intersection = (previous.bool() & candidate.bool()).sum().item()
+        union = (previous.bool() | candidate.bool()).sum().item()
+        if intersection / max(1, union) >= .9:
+            kept[index] = previous.bool() | candidate.bool()
+            return True
+    kept.append(candidate)
+    return False
 
 
 def parse_open(text, limit, automatic=True):
@@ -94,19 +165,19 @@ class DOGMAPrepPlanV117:
         req = dict(image=('IMAGE',), **vlm_settings())
         req.update(mode=(['auto_once', 'manual'],),
                    manual_categories=('STRING', {'multiline': True, 'default': ''}),
-                   max_categories=('INT', {'default': 12, 'min': 1, 'max': 24}),
+                   max_categories=('INT', {'default': 8, 'min': 1, 'max': 24}),
                    planner_side=('INT', {'default': 1024, 'min': 512, 'max': 2048, 'step': 128}),
-                   max_tokens=('INT', {'default': 192, 'min': 128, 'max': 1024}),
+                   max_tokens=('INT', {'default': 320, 'min': 128, 'max': 2048}),
                    rerun=('INT', {'default': 0, 'min': 0, 'max': 999999}))
         return {'required': req}
     RETURN_TYPES = ('DOGMA_PREP_PLAN', 'STRING')
     RETURN_NAMES = ('plan', 'inventory_and_time')
     FUNCTION = 'run'
-    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.18'
+    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.19'
 
     @classmethod
     def IS_CHANGED(cls, **kwargs):
-        return 'open-noun-inventory-118-v1'
+        return 'semantic-families-119-v1'
 
     def run(self, image, model, custom_model_id, memory_mode, mode, manual_categories,
             max_categories, planner_side, max_tokens, rerun):
@@ -120,15 +191,16 @@ class DOGMAPrepPlanV117:
                 raw = worker.run(image=lab().resize_image(image, planner_side), prompt=prompt,
                                  model=model, custom_model_id=custom_model_id, memory_mode=memory_mode,
                                  max_new_tokens=max_tokens, temperature=0., top_p=.9, enable_thinking=False,
-                                 unload_after=False, stream_output=True, system_prompt='Return only the requested short inventory.')[0]
+                                 unload_after=False, stream_output=True,
+                                 system_prompt='You identify major regions in photographs. Return a compact JSON object and stop.')[0]
             finally:
                 worker.clear_model()
-        rows, notes = parse_open(raw, max_categories, automatic=mode == 'auto_once')
+        rows, notes = parse_groups(raw, max_categories) if mode == 'auto_once' else parse_open(raw, max_categories, automatic=False)
         elapsed = time.perf_counter()-started
         plan = dict(rows=rows, seconds=elapsed, raw=raw, notes=notes, mode=mode,
                     vlm_calls=int(mode == 'auto_once'), max_categories=max_categories, max_tokens=max_tokens)
         report = f'{len(rows)} dynamic categories; {elapsed:.2f}s including model lifetime; {plan["vlm_calls"]} Qwen call(s).\n'
-        report += '\n'.join(f'{i+1}. {r["category"]} -> SAM: {r["query"]} | {r["evidence"]}' for i,r in enumerate(rows))
+        report += '\n'.join(f'{i+1}. {r["category"]} -> internal SAM searches: '+', '.join(row_queries(r)) for i,r in enumerate(rows))
         return plan, report+'\n'+'\n'.join(notes)+'\nRAW:\n'+raw
 
 
@@ -185,49 +257,55 @@ class DOGMAPrepMasksBV117:
         if plan['rows']:
             with torch.inference_mode():
                 for row in plan['rows']:
-                    lab().interrupted()
-                    query = row['query']
-                    if query in encodings:
-                        continue
-                    emb,meta = CLIPTextEncode().encode(clip,query)[0][0]
-                    if meta.get('sam3_multi_cond'):
-                        first = meta['sam3_multi_cond'][0]
-                        emb,mask = first['cond'],first.get('attention_mask')
-                    else:
-                        mask = meta.get('attention_mask')
-                    encodings[query] = (emb.detach().cpu(),mask.detach().cpu() if mask is not None else None)
+                    for query in row_queries(row):
+                        lab().interrupted()
+                        if query in encodings:
+                            continue
+                        emb,meta = CLIPTextEncode().encode(clip,query)[0][0]
+                        if meta.get('sam3_multi_cond'):
+                            first = meta['sam3_multi_cond'][0]
+                            emb,mask = first['cond'],first.get('attention_mask')
+                        else:
+                            mask = meta.get('attention_mask')
+                        encodings[query] = (emb.detach().cpu(),mask.detach().cpu() if mask is not None else None)
                 session = lab().SAMSession(model,encodings)
                 try:
                     session.prepare(source)
                     lab().sync()
                     shared = time.perf_counter()-started
+                    detections_by_query = {}
                     for slot,row in enumerate(plan['rows'],1):
                         lab().interrupted()
                         tick = time.perf_counter()
-                        detected = session.detect(row['query'],score_threshold,max_instances,True)
+                        detected = []
                         kept, reasons = [], []
+                        query_counts = []
+                        for query in row_queries(row):
+                            lab().interrupted()
+                            if query not in detections_by_query:
+                                detections_by_query[query] = session.detect(query,score_threshold,max_instances,True)
+                            found = detections_by_query[query]
+                            detected.extend(found)
+                            query_counts.append(dict(query=query,detected=len(found)))
+                            if len(found) >= max_instances:
+                                reasons.append(f'{query}: INSTANCE LIMIT REACHED; additional objects may be missing')
                         for item in detected:
                             ok,why = lab().geometric_check(item['mask'],item['box'],max_mask_coverage,min_box_agreement)
                             if not ok:
                                 reasons.append(why)
                                 continue
-                            # Exact duplicate masks do not create duplicate crop jobs.
-                            if any(torch.equal(item['mask'],other) for other in kept):
-                                reasons.append('duplicate instance mask')
-                                continue
-                            kept.append(item['mask'])
+                            if merge_instance_masks(kept,item['mask']):
+                                reasons.append('duplicate alternate-query instance merged')
                         masks = torch.stack(kept).float() if kept else torch.zeros((0,h,w))
                         entries.append(dict(slot=slot,name=row['category'],query=row['query'],masks=masks,active=bool(kept)))
-                        if len(detected) >= max_instances:
-                            reasons.append('INSTANCE LIMIT REACHED; additional objects may be missing')
                         lab().sync()
-                        stats.append(dict(category=row['category'],query=row['query'],detected=len(detected),kept=len(kept),
+                        stats.append(dict(category=row['category'],query=row['query'],queries=query_counts,detected=len(detected),kept=len(kept),
                                           seconds=time.perf_counter()-tick,reasons=reasons))
                 finally:
                     session.clear()
         elapsed = time.perf_counter()-started
         report = (f'B: {elapsed:.2f}s including image resize, text/model setup and first image encoding ({shared:.2f}s shared). '
-                  f'One SAM image encoding, {len(plan["rows"])} text searches when inventory is nonempty. '
+                  f'One SAM image encoding, {len(encodings)} unique text searches across {len(plan["rows"])} groups. '
                   f'Analysis {w}x{h}; original {image.shape[2]}x{image.shape[1]}.\n'
                   'Geometry guards are NOT semantic verification. No per-mask Qwen audits or recursive recovery.\n')
         report += '\n'.join(f'{s["category"]}: {s["kept"]}/{s["detected"]} masks; {s["seconds"]:.2f}s; '+ '; '.join(s['reasons']) for s in stats)
@@ -387,7 +465,7 @@ class DOGMAPrepDescribeV117:
                   f'Compute subtotal: {total:.2f}s. Excludes user selection wait, cached stages, checkpoint loader, previews and exports.\n'
                   'No diffusion model, CLIP conditioning, VAE encode/decode or sampling in this preparation test.\n'
                   'Planner and captions have separate worker lifetimes. Cached upstream times are retained, not new queue measurements.\n')
-        document = dict(version='1.0.17',inventory=crop_jobs['plan'],mask_stats=crop_jobs['mask_stats'],
+        document = dict(version='1.0.19',inventory=crop_jobs['plan'],mask_stats=crop_jobs['mask_stats'],
                         chosen=crop_jobs['chosen'],geometry=crop_jobs['geometry'],ownership=crop_jobs['ownership'],
                         crop_count=len(records),crop_seconds=crop_jobs['crop_seconds'],mask_seconds=crop_jobs['mask_seconds'],
                         caption_seconds=caption_seconds,compute_subtotal_seconds=total,records=records)
@@ -412,4 +490,4 @@ class DOGMAPrepDescribeV117:
 
 
 NODE_CLASS_MAPPINGS = {c.__name__:c for c in (DOGMAPrepPlanV117,DOGMAPrepMasksBV117,DOGMAPrepCropsV117,DOGMAPrepDescribeV117)}
-NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V117',' 1.0.17') for k in NODE_CLASS_MAPPINGS}
+NODE_DISPLAY_NAME_MAPPINGS = {k:k.replace('DOGMA','DOGMA ').replace('V117',' 1.0.19') for k in NODE_CLASS_MAPPINGS}
