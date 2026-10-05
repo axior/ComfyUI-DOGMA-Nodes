@@ -26,7 +26,16 @@ def vlm_settings():
     return {k: schema[k] for k in ('model', 'custom_model_id', 'memory_mode')}
 
 
-def parse_open(text, limit):
+def inventory_prompt(limit):
+    return (f'List at most {limit} different types of visible objects and surfaces in this image. '
+            'Use short English names. Look across the whole image, including foreground and background. '
+            'Include the ground surface when visible. Name complete objects rather than their parts. '
+            'Write each type only once, one name per line. '
+            'Do not write locations, descriptions, tables, or explanations. '
+            'Do not guess objects that are not visible. Write NONE if nothing is identifiable.')
+
+
+def parse_open(text, limit, automatic=True):
     """Accept arbitrary nouns, preserving specific terms instead of urban aliases."""
     raw = lab().clean_inventory(text)
     rows, notes = [], []
@@ -51,19 +60,27 @@ def parse_open(text, limit):
                 rows.append(dict(category=parts[0], queries=[parts[0]], evidence='Location not supplied'))
             else:
                 notes.append('Ignored incomplete/unrecognized row: ' + line[:100])
-    result, seen = [], set()
+    result, seen, duplicates = [], set(), 0
     for row in rows:
         name = ' '.join(re.sub(r'[^a-zA-Z0-9 -]', ' ', str(row.get('category', ''))).lower().split())
         if not name or len(name) > 60 or name in ('none', 'no categories'):
             continue
         if name in seen:
+            duplicates += 1
             notes.append('Merged repeated category: ' + name)
             continue
         queries = row.get('queries')
         query = queries[0] if isinstance(queries, list) and queries and isinstance(queries[0], str) else name
         query = ' '.join(query.split(';')[0].split())[:80] or name
+        if automatic:
+            if query.lower() != name:
+                notes.append('Automatic SAM query uses category name, ignoring auxiliary field: ' + name)
+            query = name
         result.append(dict(category=name, query=query, evidence=str(row.get('evidence', ''))[:200]))
         seen.add(name)
+    if automatic and duplicates:
+        notes.append(f'WARNING: Qwen repeated {duplicates} category rows; merged duplicates. '
+                     'Inventory may be incomplete; inspect previews. No extra VLM calls were made.')
     if len(result) > limit:
         notes.append(f'Category budget: {len(result)-limit} proposals omitted; increase max_categories.')
     if not result and raw.upper() not in ('NONE', 'NO CATEGORIES', '[]'):
@@ -79,26 +96,23 @@ class DOGMAPrepPlanV117:
                    manual_categories=('STRING', {'multiline': True, 'default': ''}),
                    max_categories=('INT', {'default': 12, 'min': 1, 'max': 24}),
                    planner_side=('INT', {'default': 1024, 'min': 512, 'max': 2048, 'step': 128}),
-                   max_tokens=('INT', {'default': 512, 'min': 128, 'max': 1024}),
+                   max_tokens=('INT', {'default': 192, 'min': 128, 'max': 1024}),
                    rerun=('INT', {'default': 0, 'min': 0, 'max': 999999}))
         return {'required': req}
     RETURN_TYPES = ('DOGMA_PREP_PLAN', 'STRING')
     RETURN_NAMES = ('plan', 'inventory_and_time')
     FUNCTION = 'run'
-    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.17'
+    CATEGORY = 'DOGMA/Phase 3 preparation 1.0.18'
+
+    @classmethod
+    def IS_CHANGED(cls, **kwargs):
+        return 'open-noun-inventory-118-v1'
 
     def run(self, image, model, custom_model_id, memory_mode, mode, manual_categories,
             max_categories, planner_side, max_tokens, rerun):
         started = time.perf_counter()
         lab().interrupted()
-        prompt = (f'Inspect this photograph. List at most {max_categories} distinct VISIBLE semantic categories. '
-                  'Categories must be created from this image, not chosen from a fixed vocabulary. '
-                  'Inspect large surfaces, complete structures, objects and living subjects across the whole frame. '
-                  'Retain useful specific object types; do not reduce all architecture to buildings or all objects to objects. '
-                  'Group repeated instances of the same type into one row. Do not list both a parent class and its subtypes '
-                  'for the same objects. Prefer whole objects over their parts. Include only visible evidence; do not fill a quota. '
-                  'Output category | short concrete segmentation noun | visible location. '
-                  'One row per distinct type. English only, no prose, no JSON. Output NONE if nothing is identifiable.')
+        prompt = inventory_prompt(max_categories)
         raw = manual_categories
         if mode == 'auto_once':
             worker = node('ModernVLM')()
@@ -109,7 +123,7 @@ class DOGMAPrepPlanV117:
                                  unload_after=False, stream_output=True, system_prompt='Return only the requested short inventory.')[0]
             finally:
                 worker.clear_model()
-        rows, notes = parse_open(raw, max_categories)
+        rows, notes = parse_open(raw, max_categories, automatic=mode == 'auto_once')
         elapsed = time.perf_counter()-started
         plan = dict(rows=rows, seconds=elapsed, raw=raw, notes=notes, mode=mode,
                     vlm_calls=int(mode == 'auto_once'), max_categories=max_categories, max_tokens=max_tokens)
@@ -217,6 +231,10 @@ class DOGMAPrepMasksBV117:
                   f'Analysis {w}x{h}; original {image.shape[2]}x{image.shape[1]}.\n'
                   'Geometry guards are NOT semantic verification. No per-mask Qwen audits or recursive recovery.\n')
         report += '\n'.join(f'{s["category"]}: {s["kept"]}/{s["detected"]} masks; {s["seconds"]:.2f}s; '+ '; '.join(s['reasons']) for s in stats)
+        if plan['rows'] and not any(e['active'] for e in entries):
+            queries = ', '.join(repr(r['query']) for r in plan['rows'])
+            raise ValueError('DOGMA: inventory produced no usable masks; this is not a user selection. '
+                             'Check category names and SAM queries before retrying. Queries: ' + queries + '\n' + report)
         bundle = dict(entries=entries,shape=tuple(image.shape[1:3]),image=image,plan=plan,mask_stats=stats,mask_seconds=elapsed)
         return bundle,cards(image,entries),report
 
