@@ -133,7 +133,7 @@ class DOGMAPhase3RenderV122:
 
     def render(self, prepared, negative_prompt, steps, cfg, scheduler, seed, vae_tile_size,
                vae_overlap, low_frequency_strength, save_reports,
-               model=None, clip=None, vae=None, sampler=None):
+               model=None, clip=None, vae=None, sampler=None, _review=None):
         if prepared.get('schema') != 2:raise ValueError('DOGMA: regenerate isolated target jobs.')
         started = time.perf_counter()
         result = prepared['image']
@@ -143,9 +143,11 @@ class DOGMAPhase3RenderV122:
         report=[];negative=None;sigmas_by_denoise={}
         for job in jobs:
             prep.lab().interrupted()
+            if _review is not None: _review.before(job, result)
             info=dict(id=job['id'],category=job['category'],target_id=job['target_id'],instance_id=job['instance_id'],denoise=job['denoise'])
             if not renderable(job):
                 info.update(status='preserved',reason=job.get('review_reason') or 'denoise=0')
+                if _review is not None: _review.after(job, result, None, info)
                 report.append(info);continue
             d=job['denoise']
             if d not in sigmas_by_denoise:
@@ -161,6 +163,7 @@ class DOGMAPhase3RenderV122:
             result,_=node('DOGMASoftStitchV566')().stitch_regions(
                 result,[patch],[job['inpaint']],[job['mask']],[job['metadata']],job['category'],job['kind'],low_frequency_strength)
             info.update(status='rendered',seed=noise_seed,prompt=job['prompt'])
+            if _review is not None: _review.after(job, result, patch, info)
             report.append(info)
         document=dict(version='1.0.22',steps=steps,cfg=cfg,scheduler=scheduler,base_seed=seed,
                       elapsed_seconds=time.perf_counter()-started,jobs=report)

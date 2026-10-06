@@ -137,3 +137,13 @@ from .dogma_integrated_v122 import NODE_CLASS_MAPPINGS as _V122, NODE_DISPLAY_NA
 NODE_CLASS_MAPPINGS.update(_V122)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V122_NAMES)
 del _V122, _V122_NAMES
+
+# Content-versioned UI and non-invasive review outputs; V122 identifiers remain valid.
+from pathlib import Path as _DogmaPath
+from .dogma_frontend_v123 import register_frontend as _register_frontend123
+_register_frontend123(_DogmaPath(__file__).parent / WEB_DIRECTORY)
+del _register_frontend123, _DogmaPath
+from .dogma_review_v123 import NODE_CLASS_MAPPINGS as _V123, NODE_DISPLAY_NAME_MAPPINGS as _V123_NAMES
+NODE_CLASS_MAPPINGS.update(_V123)
+NODE_DISPLAY_NAME_MAPPINGS.update(_V123_NAMES)
+del _V123, _V123_NAMES
