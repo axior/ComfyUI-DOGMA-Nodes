@@ -159,3 +159,14 @@ NODE_CLASS_MAPPINGS.update(_SIGNS125)
 NODE_DISPLAY_NAME_MAPPINGS.update(_SIGNS125_NAMES)
 _signs_routes125()
 del _SIGNS125, _SIGNS125_NAMES, _signs_routes125
+
+# Independent manual-mask workflow. Never replace any existing node ID.
+try:
+    from .dogma_local_v126 import NODE_CLASS_MAPPINGS as _LOCAL126, NODE_DISPLAY_NAME_MAPPINGS as _LOCAL126_NAMES, register_routes as _local_routes126
+    if set(_LOCAL126).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA Local 126: node ID collision")
+    _local_routes126()
+    NODE_CLASS_MAPPINGS.update(_LOCAL126)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_LOCAL126_NAMES)
+except Exception as _local126_error:
+    print("[DOGMA Local 126] Manual inpaint unavailable; existing nodes preserved:", _local126_error)
