@@ -152,3 +152,10 @@ from .dogma_coherence_v124 import NODE_CLASS_MAPPINGS as _V124, NODE_DISPLAY_NAM
 NODE_CLASS_MAPPINGS.update(_V124)
 NODE_DISPLAY_NAME_MAPPINGS.update(_V124_NAMES)
 del _V124, _V124_NAMES
+
+# Isolated signs workflow; previous node classes and frontend are unchanged.
+from .dogma_signs_v125 import NODE_CLASS_MAPPINGS as _SIGNS125, NODE_DISPLAY_NAME_MAPPINGS as _SIGNS125_NAMES, register_routes as _signs_routes125
+NODE_CLASS_MAPPINGS.update(_SIGNS125)
+NODE_DISPLAY_NAME_MAPPINGS.update(_SIGNS125_NAMES)
+_signs_routes125()
+del _SIGNS125, _SIGNS125_NAMES, _signs_routes125
