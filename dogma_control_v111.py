@@ -200,7 +200,7 @@ class DOGMACategories8V111:
 PENDING={}
 LOCK=threading.Lock()
 
-def submit_selection(token,indices,denoise_overrides=None):
+def submit_selection(token,indices,denoise_overrides=None,avoid_blocks=None):
     with LOCK:
         entry=PENDING.get(token)
         if entry is None:return False,'Selection expired or already completed.'
@@ -212,6 +212,12 @@ def submit_selection(token,indices,denoise_overrides=None):
         if overrides and 'default_denoise' not in entry['payload']:return False,'Denoise overrides unavailable for this workflow.'
         if any(k not in {str(i) for i in indices} for k in overrides):return False,'Denoise requires a selected category.'
         if any(type(v) not in (int,float) or not math.isfinite(v) or not 0 <= v <= 1 for v in overrides.values()):return False,'Denoise must be between 0 and 1.'
+        whole = {} if avoid_blocks is None else avoid_blocks
+        if not isinstance(whole,dict):return False,'Expected category Evita Blocchi values.'
+        if whole and not entry['payload'].get('supports_avoid_blocks'):return False,'Evita Blocchi unavailable for this workflow.'
+        if any(k not in {str(i) for i in indices} for k in whole):return False,'Evita Blocchi requires a selected category.'
+        if any(type(v) is not bool for v in whole.values()):return False,'Evita Blocchi must be On or Off.'
+        entry['avoid_blocks']=dict(whole)
         entry['denoise_overrides']=dict(overrides)
         entry['selected']=indices
         return True,'OK'
@@ -222,7 +228,7 @@ def register_routes():
     @PromptServer.instance.routes.post('/dogma/categories/select')
     async def select(request):
         try:
-            data=await request.json();ok,message=submit_selection(data.get('token'),data.get('indices'),data.get('denoise_overrides'))
+            data=await request.json();ok,message=submit_selection(data.get('token'),data.get('indices'),data.get('denoise_overrides'),data.get('avoid_blocks'))
             return web.json_response({'ok':ok,'message':message},status=200 if ok else 400)
         except (ValueError,TypeError):return web.json_response({'ok':False,'message':'Invalid request'},status=400)
     @PromptServer.instance.routes.get('/dogma/categories/pending')
@@ -239,12 +245,12 @@ class DOGMAChooseCategoriesV111:
     FUNCTION='choose';CATEGORY='DOGMA/v1.0.11'
     @classmethod
     def IS_CHANGED(cls,manual,**kwargs):return float('nan') if manual else False
-    async def choose(self,categories,previews,manual,unique_id=None,default_denoise=None):
+    async def choose(self,categories,previews,manual,unique_id=None,default_denoise=None,_supports_avoid_blocks=False):
         if default_denoise is not None and (not math.isfinite(default_denoise) or not 0 <= default_denoise <= 1):
             raise ValueError('DOGMA: default denoise must be between 0 and 1.')
         available=[e for e in categories['entries'] if e['active']]
         selected=[e['slot'] for e in available]
-        overrides={}
+        overrides={};whole={}
         if manual and available:
             import nodes
             from server import PromptServer
@@ -253,6 +259,7 @@ class DOGMAChooseCategoriesV111:
             token=secrets.token_urlsafe(24)
             payload={'token':token,'node_id':str(unique_id),'categories':[{'id':e['slot'],'name':e['name'],'image':url} for e,url in zip(available,saved)]}
             if default_denoise is not None:payload['default_denoise']=float(default_denoise)
+            if _supports_avoid_blocks:payload['supports_avoid_blocks']=True
             entry={'allowed':selected,'selected':None,'payload':payload}
             with LOCK:PENDING[token]=entry
             try:
@@ -263,18 +270,23 @@ class DOGMAChooseCategoriesV111:
                     if selection is not None:
                         selected=selection
                         overrides=entry.get('denoise_overrides',{})
+                        whole=entry.get('avoid_blocks',{})
                         break
                     await asyncio.sleep(.2)
             finally:
                 with LOCK:PENDING.pop(token,None)
                 PromptServer.instance.send_sync('dogma-category-choice-close',{'token':token})
         result=dict(categories,selected=selected)
+        if _supports_avoid_blocks:
+            result['avoid_blocks_by_target']={e['target_id']:whole.get(str(e['slot']),False) for e in available if e['slot'] in selected}
         if default_denoise is not None:
             result['default_denoise']=float(default_denoise)
             result['denoise_by_target']={e['target_id']:float(overrides.get(str(e['slot']),default_denoise)) for e in available if e['slot'] in selected}
         report=('MANUAL' if manual else 'AUTO')+': '+(', '.join(e['name'] for e in available if e['slot'] in selected) or 'no categories selected; phase 3 passes the input image through')
         if default_denoise is not None:
             report+='\n'+'\n'.join(f'{e["name"]}: denoise {result["denoise_by_target"][e["target_id"]]:.2f} ('+('custom' if str(e['slot']) in overrides else 'default')+')' for e in available if e['slot'] in selected)
+        if _supports_avoid_blocks:
+            report+='\n'+'\n'.join(f'{e["name"]}: Evita Blocchi '+('On' if result['avoid_blocks_by_target'][e['target_id']] else 'Off') for e in available if e['slot'] in selected)
         return result,report
 
 class DOGMASelectedMasks8V111:

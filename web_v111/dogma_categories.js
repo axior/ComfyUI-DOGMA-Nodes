@@ -29,6 +29,7 @@ function showChoice(payload) {
   Object.assign(grid.style, { display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(420px,1fr))", gap: "16px" });
   const inputs = [];
   const denoiseControls = new Map();
+  const wholeControls = new Map();
   const hasDenoise = Number.isFinite(payload.default_denoise);
   if (hasDenoise) element("p", `Denoise generale: ${payload.default_denoise.toFixed(2)}. Attiva un valore personalizzato solo per le categorie da modificare. 0 conserva i pixel originali.`, dialog);
   for (const category of payload.categories) {
@@ -72,10 +73,23 @@ function showChoice(payload) {
       custom.onchange = refresh; slider.oninput = refresh;
       denoiseControls.set(category.id, { custom, slider, refresh }); refresh();
     }
+    if (payload.supports_avoid_blocks) {
+      const row = element("label", null, card);
+      Object.assign(row.style, {display: "flex", gap: "8px", marginTop: "10px", alignItems: "center"});
+      const whole = element("input", null, row); whole.type = "checkbox";
+      whole.setAttribute("aria-label", `Evita Blocchi ${category.name}`);
+      element("span", "Evita Blocchi", row);
+      const value = element("span", "Off", row);
+      row.title = "Unica inferenza entro il limite del subgraph. Superfici unite; oggetti distinti restano separati.";
+      const refresh = () => { whole.disabled = !input.checked; value.textContent = whole.checked ? "On" : "Off"; };
+      whole.onchange = refresh;
+      wholeControls.set(category.id, {whole, refresh}); refresh();
+    }
     input.addEventListener("change", () => {
       input.checked ? selected.add(category.id) : selected.delete(category.id);
       card.style.borderColor = input.checked ? "#6bc5c1" : "#53606d";
       denoiseControls.get(category.id)?.refresh();
+      wholeControls.get(category.id)?.refresh();
       update();
     });
   }
@@ -96,6 +110,7 @@ function showChoice(payload) {
     try {
       const body = { token: payload.token, indices };
       if (hasDenoise) body.denoise_overrides = Object.fromEntries(indices.filter(id => denoiseControls.get(id)?.custom.checked).map(id => [String(id), Number(denoiseControls.get(id).slider.value)]));
+      if (payload.supports_avoid_blocks) body.avoid_blocks = Object.fromEntries(indices.filter(id => wholeControls.get(id)?.whole.checked).map(id => [String(id), true]));
       const response = await api.fetchApi("/dogma/categories/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       const result = await response.json();
       if (!response.ok || !result.ok) throw new Error(result.message || "Selezione non accettata");

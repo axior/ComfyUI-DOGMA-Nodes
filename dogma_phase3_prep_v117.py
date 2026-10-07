@@ -502,7 +502,7 @@ class DOGMAPrepCropsV117:
     CATEGORY = DOGMAPrepPlanV117.CATEGORY
 
     def run(self,selection,overlap_policy,target_long_side,group_gap_px,context_px,
-            max_objects_per_chunk,max_chunks_per_category,max_total_crops):
+            max_objects_per_chunk,max_chunks_per_category,max_total_crops,_whole_region_side=None):
         import math
         import torch
         import torch.nn.functional as F
@@ -519,6 +519,10 @@ class DOGMAPrepCropsV117:
             # Share the bounded workload across remaining selected categories.
             allowance = min(max_chunks_per_category,math.ceil(remaining/(len(active)-index)))
             kind,_,_ = node('DOGMADenoiseCategoryV566')().build(e['name'],'')
+            whole = bool(_whole_region_side and selection.get('avoid_blocks_by_target',{}).get(e['target_id'],False))
+            if whole and kind == 'SURFACE':
+                # One continuous material, even when foreground objects split its visible mask.
+                e = dict(e, masks=e['masks'].amax(0,keepdim=True), instance_ids=[e['target_id']+':surface'])
             candidates = [i for i,m in enumerate(e['masks']) if bool(m.any())]
             # Stable, largest detections first; budget exhaustion is explicit, never a merge.
             candidates.sort(key=lambda i:(-int(e['masks'][i].sum()),i))
@@ -531,15 +535,20 @@ class DOGMAPrepCropsV117:
                     continue
                 instance_budget = max(1,math.ceil(left/(len(candidates)-position)))
                 instance_mask = e['masks'][instance:instance+1]
-                crops,masks,metadata,info = node('DOGMAObjectNativeCropsV111')().make(
-                    selection['image'],instance_mask,e['name'],kind,target_long_side,0,context_px,
+                if whole:
+                    from .dogma_coherence_v124 import WholeRegionCrop
+                    maker = WholeRegionCrop()
+                else:
+                    maker = node('DOGMAObjectNativeCropsV111')()
+                crops,masks,metadata,info = maker.make(
+                    selection['image'],instance_mask,e['name'],kind,_whole_region_side if whole else target_long_side,0,context_px,
                     1,instance_budget,.5)
                 details.append(instance_id+': '+info)
                 native = F.interpolate(instance_mask[:,None],size=selection['image'].shape[1:3],mode='nearest')[:,0]
                 for crop,mask,meta in zip(crops,masks,metadata):
                     if meta.get('noop') or not bool(mask.any()):
                         continue
-                    assert crop.shape[1]>=meta['height'] and crop.shape[2]>=meta['width']
+                    if not whole:assert crop.shape[1]>=meta['height'] and crop.shape[2]>=meta['width']
                     inp,blend,_,_,_ = node('DOGMADualMaskV566')().build(mask,kind)
                     x,y,w,h = (meta[k] for k in ('x','y','width','height'))
                     pr,pb = meta['pad_right'],meta['pad_bottom']
@@ -559,9 +568,9 @@ class DOGMAPrepCropsV117:
         bundle = dict(schema=2,jobs=jobs,plan=selection['plan'],mask_stats=selection['mask_stats'],
                       mask_seconds=selection['mask_seconds'],crop_seconds=elapsed,geometry=details,ownership=notes,
                       chosen=list(selection['selected']),max_total_crops=max_total_crops)
-        report = (f'{len(jobs)} prepared crops; {elapsed:.2f}s. Native source pixels or upscale only. '
+        report = (f'{len(jobs)} prepared crops; {elapsed:.2f}s. Native tiles; whole-region downscale only with Evita Blocchi On. '
                   f'Total crop budget {max_total_crops}; deferred regions are listed below. '
-                  'One detection per crop; no category union. Noise and blend confined to the target. '
+                  'Independent objects per crop; Evita Blocchi joins surface masks only when selected. Noise and blend confined to the target. '
                   'SAM detections can still contain semantic errors.\n'+'\n'.join(notes+details))
         return bundle,cards(selection['image'],entries),report
 

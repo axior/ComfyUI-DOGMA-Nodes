@@ -280,6 +280,10 @@ class DOGMASoftStitchV566:
             seed=(F.interpolate(bm[:,None].float(),size=(h,w),mode='nearest')[0,0]>=.5).cpu().numpy()
             support=(F.interpolate(gm[:,None].float(),size=(h,w),mode='nearest')[0,0]>=.5).cpu().numpy()
             seed &= support
+            if meta.get('source_mask_packbits'):
+                import base64
+                raw = np.frombuffer(base64.b64decode(meta['source_mask_packbits'],validate=True),dtype=np.uint8)
+                seed = np.unpackbits(raw,count=h*w).reshape(h,w).astype(bool)
             alpha=torch.from_numpy(self.alpha_from_seed(seed,min(24,max(4,min(h,w)*.01)))).to(dev)[None,:,:,None]
             region=result[:,y:y+h,x:x+w,:]
             delta=(patch-region).float()
