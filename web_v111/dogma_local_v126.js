@@ -21,7 +21,11 @@ function showLocal(payload) {
   dialog = el("dialog", null, document.body);
   Object.assign(dialog.style, {width:"min(1500px,94vw)",maxHeight:"90vh",overflow:"auto",padding:"22px",background:"#20252b",color:"#f2f4f5",border:"1px solid #617285",borderRadius:"12px"});
   el("h2", "Inpaint locale - descrivi ogni zona mascherata", dialog);
-  el("p", "A sinistra il ritaglio originale, a destra la zona modificabile in azzurro. Scrivi cosa deve diventare, migliora il prompt e controllalo prima di applicare. Ogni ritaglio viene lavorato a 2K con le impostazioni predefinite.", dialog);
+  if(payload.server_version!=="1.0.28") {
+    const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare il workflow V4.",dialog);
+    Object.assign(warning.style,{background:"#713d17",padding:"12px",fontWeight:"bold"});
+  } else el("p","DOGMA Inpaint 1.0.28 attivo",dialog);
+  el("p", "A sinistra il ritaglio originale, a destra la zona modificabile in azzurro. Puoi indicare cosa deve diventare o scrivere un prompt manuale. Premi Applica: i prompt mancanti vengono preparati automaticamente. La zona azzurra include l’espansione impostata nel workflow. Ogni ritaglio viene lavorato a 2K con le impostazioni predefinite.", dialog);
   const grid = el("div", null, dialog);
   Object.assign(grid.style, {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,430px),1fr))",gap:"16px"});
   const entries = [], editable = [], actionButtons = [];
@@ -43,12 +47,12 @@ function showLocal(payload) {
     const params = new URLSearchParams({filename:item.preview.filename,subfolder:item.preview.subfolder||"",type:item.preview.type||"temp"});
     img.src=api.apiURL(`/view?${params}`); img.alt="Originale e maschera della zona";
     Object.assign(img.style,{width:"100%",display:"block",margin:"12px 0"});
-    const brief=field("textarea","Cosa deve essere (italiano o inglese)",item.brief,2000,card,`Descrizione zona ${item.id}`);
+    const brief=field("textarea","Descrizione breve (facoltativa, da sviluppare automaticamente)",item.brief,2000,card,`Descrizione zona ${item.id}`);
     brief.placeholder="Es. cartello blu con freccia bianca diagonale verso destra in alto";
     const exact=field("textarea","Testo esatto (facoltativo)",item.exact_text,500,card,`Testo esatto zona ${item.id}`);
     exact.style.minHeight="55px";
     const improve=el("button","Migliora questo prompt",card); actionButtons.push(improve);
-    const prompt=field("textarea","Prompt finale - controlla e modifica prima di applicare",item.prompt,6000,card,`Prompt finale zona ${item.id}`);
+    const prompt=field("textarea","Prompt manuale / generato (facoltativo; se compilato viene usato direttamente)",item.prompt,6000,card,`Prompt finale zona ${item.id}`);
     prompt.style.minHeight="170px";
     if(item.error) el("p",item.error,card);
     const groupLabel=el("label",null,card);
@@ -66,25 +70,26 @@ function showLocal(payload) {
   const controls=el("div",null,dialog);
   Object.assign(controls.style,{display:"flex",flexWrap:"wrap",gap:"10px",position:"sticky",bottom:"0",padding:"12px 0",background:"#20252b"});
   const improveAll=el("button","Migliora prompt selezionati",controls);
+  const selectAll=el("button","Seleziona tutti",controls);
+  const deselectAll=el("button","Deseleziona tutti",controls);
   const merge=el("button","Unisci zone contrassegnate",controls);
   const apply=el("button","Applica inpaint selezionati",controls);
   const skip=el("button","Conserva originale",controls);
   const hide=el("button","Nascondi finestra",controls);
   const stop=el("button","Interrompi esecuzione",controls);
-  actionButtons.push(improveAll,merge,apply,skip);
+  actionButtons.push(improveAll,selectAll,deselectAll,merge,apply,skip);
   function snapshot(){return entries.map(e=>({id:e.id,selected:e.check.checked,brief:e.brief.value,exact_text:e.exact.value,prompt:e.prompt.value}));}
   function update(){
     const selected=entries.filter(e=>e.check.checked);
     for(const f of editable) f.disabled=localBusy;
     for(const b of actionButtons) b.disabled=localBusy;
     if(localBusy){status.textContent="Operazione in corso. Il popup si aggiornera al termine; puoi nasconderlo durante l'attesa.";return;}
-    for(const e of entries)e.improve.disabled=!e.brief.value.trim();
-    improveAll.disabled=!selected.length||selected.some(e=>!e.brief.value.trim());
+    improveAll.disabled=!selected.length;
     merge.disabled=entries.filter(e=>e.group.checked).length<2;
-    apply.disabled=!selected.length||selected.some(e=>!e.prompt.value.trim());
+    apply.disabled=!selected.length;
     const missing=selected.filter(e=>!e.prompt.value.trim()).map(e=>e.id);
     const changed=selected.filter(e=>e.briefChanged&&e.prompt.value.trim()).map(e=>e.id);
-    status.textContent=`${selected.length} zone selezionate. `+(missing.length?`Prompt finale mancante nelle zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: controlla o rigenera il prompt conservato. `:"")+(payload.message||"");
+    status.textContent=`${selected.length} zone selezionate. `+(missing.length?`Preparazione automatica al clic su Applica per le zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: il prompt compilato ha precedenza; svuotalo per rigenerarlo automaticamente. `:"")+(payload.message||"");
   }
   async function send(action,ids=[]){
     if(localBusy)return;
@@ -98,6 +103,8 @@ function showLocal(payload) {
     }
   }
   improveAll.onclick=()=>send("improve",entries.filter(e=>e.check.checked).map(e=>e.id));
+  selectAll.onclick=()=>{for(const e of entries)e.check.checked=true;update();};
+  deselectAll.onclick=()=>{for(const e of entries)e.check.checked=false;update();};
   merge.onclick=()=>send("merge",entries.filter(e=>e.group.checked).map(e=>e.id));
   apply.onclick=()=>send("render");skip.onclick=()=>send("skip");
   reopen=el("button","Riprendi inpaint locale",document.body);
@@ -112,7 +119,7 @@ app.registerExtension({
   name:"DOGMA.Local.v126",
   nodeCreated(node){
     if(!/^DOGMALocal(?:Masks|Review|Render)V126$/.test(node.comfyClass||node.type||""))return;
-    const labels={match_photo:"INTEGRAZIONE FOTO",photo_strength:"INTENSITA INTEGRAZIONE",context_px:"CONTESTO INTORNO ALLA ZONA",render_side:"LATO LUNGO RITAGLIO",project_context:"CONTESTO DEL PROGETTO",rerun:"NUOVA REVISIONE",vision_model:"QWEN MIGLIORA PROMPT",memory_mode:"GESTIONE MEMORIA",mode:"MODALITA DENOISE / EDIT",denoise:"INTENSITA DENOISE (EDIT USA 1.00)",feather_px:"SFUMATURA INTERNA",vae_tile_size:"VAE TILED",seed:"SEED",negative_prompt:"PROMPT NEGATIVO"};
+    const labels={mask_expand_px:"ESPANSIONE MASCHERE (PX ORIGINALI)",match_photo:"INTEGRAZIONE FOTO",photo_strength:"INTENSITA INTEGRAZIONE",context_px:"CONTESTO INTORNO ALLA ZONA",render_side:"LATO LUNGO RITAGLIO",project_context:"CONTESTO DEL PROGETTO",rerun:"NUOVA REVISIONE",vision_model:"QWEN MIGLIORA PROMPT",memory_mode:"GESTIONE MEMORIA",mode:"MODALITA DENOISE / EDIT",denoise:"INTENSITA DENOISE (EDIT USA 1.00)",feather_px:"SFUMATURA BORDI - TUTTE LE MASCHERE",vae_tile_size:"VAE TILED",seed:"SEED",negative_prompt:"PROMPT NEGATIVO"};
     for(const w of node.widgets||[])if(labels[w.name])w.label=labels[w.name];
   },
   setup(){
