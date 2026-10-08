@@ -3,6 +3,11 @@ import { api } from "../../scripts/api.js";
 
 // Isolated UI: never touches the V81 or v125 dialogs, node IDs or widgets.
 let active = null, dialog = null, reopen = null, localBusy = false;
+const submitted = new Set();
+function rememberSubmitted(token) {
+  submitted.add(token);
+  if(submitted.size>128)submitted.delete(submitted.values().next().value);
+}
 function el(tag, text, parent) {
   const node = document.createElement(tag);
   if (text != null) node.textContent = text;
@@ -15,16 +20,19 @@ function closeLocal() {
 }
 function showLocal(payload) {
   if (!payload?.token || !Array.isArray(payload.items)) return;
+  if(submitted.has(payload.token)||payload.phase==="render")return;
   if (active?.token === payload.token && active.revision >= payload.revision) return;
   const hidden = dialog && !dialog.open;
   closeLocal(); active = payload; localBusy = !!payload.busy;
   dialog = el("dialog", null, document.body);
-  Object.assign(dialog.style, {width:"min(1500px,94vw)",maxHeight:"90vh",overflow:"auto",padding:"22px",background:"#20252b",color:"#f2f4f5",border:"1px solid #617285",borderRadius:"12px"});
+  Object.assign(dialog.style, {width:"min(1000px,90vw)",maxHeight:"80vh",overflow:"auto",padding:"18px",background:"#20252b",color:"#f2f4f5",border:"1px solid #617285",borderRadius:"12px"});
+  const close=el("button","Chiudi finestra (non interrompe)",dialog);
+  Object.assign(close.style,{float:"right",padding:"8px"});
   el("h2", "Inpaint locale - descrivi ogni zona mascherata", dialog);
-  if(payload.server_version!=="1.0.28") {
+  if(payload.server_version!=="1.0.29") {
     const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare il workflow V4.",dialog);
     Object.assign(warning.style,{background:"#713d17",padding:"12px",fontWeight:"bold"});
-  } else el("p","DOGMA Inpaint 1.0.28 attivo",dialog);
+  } else el("p","DOGMA Inpaint 1.0.29 attivo",dialog);
   el("p", "A sinistra il ritaglio originale, a destra la zona modificabile in azzurro. Puoi indicare cosa deve diventare o scrivere un prompt manuale. Premi Applica: i prompt mancanti vengono preparati automaticamente. La zona azzurra include l’espansione impostata nel workflow. Ogni ritaglio viene lavorato a 2K con le impostazioni predefinite.", dialog);
   const grid = el("div", null, dialog);
   Object.assign(grid.style, {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,430px),1fr))",gap:"16px"});
@@ -46,7 +54,7 @@ function showLocal(payload) {
     const img = el("img", null, card);
     const params = new URLSearchParams({filename:item.preview.filename,subfolder:item.preview.subfolder||"",type:item.preview.type||"temp"});
     img.src=api.apiURL(`/view?${params}`); img.alt="Originale e maschera della zona";
-    Object.assign(img.style,{width:"100%",display:"block",margin:"12px 0"});
+    Object.assign(img.style,{width:"100%",maxHeight:"280px",objectFit:"contain",display:"block",margin:"12px 0"});
     const brief=field("textarea","Descrizione breve (facoltativa, da sviluppare automaticamente)",item.brief,2000,card,`Descrizione zona ${item.id}`);
     brief.placeholder="Es. cartello blu con freccia bianca diagonale verso destra in alto";
     const exact=field("textarea","Testo esatto (facoltativo)",item.exact_text,500,card,`Testo esatto zona ${item.id}`);
@@ -93,12 +101,15 @@ function showLocal(payload) {
   }
   async function send(action,ids=[]){
     if(localBusy)return;
+    const finishing=action==="render"||action==="skip";
+    if(finishing)rememberSubmitted(payload.token);
     localBusy=true;update();
     try{
       const r=await api.fetchApi("/dogma/local126/action",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({token:payload.token,revision:payload.revision,action,items:snapshot(),ids})});
       const d=await r.json(); if(!r.ok||!d.ok)throw new Error(d.message||"Operazione non accettata");
       if(active?.token===payload.token&&active.revision===payload.revision&&(action==="render"||action==="skip"))closeLocal();
     }catch(error){
+      if(finishing)submitted.delete(payload.token);
       if(active?.token===payload.token&&active.revision===payload.revision){localBusy=false;update();status.textContent=String(error.message||error);}
     }
   }
@@ -110,6 +121,7 @@ function showLocal(payload) {
   reopen=el("button","Riprendi inpaint locale",document.body);
   Object.assign(reopen.style,{display:"none",position:"fixed",right:"24px",bottom:"135px",zIndex:"100000",padding:"15px",background:"#2a625f",color:"white"});
   hide.onclick=()=>{dialog.close();reopen.style.display="block";};
+  close.onclick=hide.onclick;
   reopen.onclick=()=>{dialog.showModal();reopen.style.display="none";};
   dialog.addEventListener("cancel",e=>{e.preventDefault();hide.click();});
   stop.onclick=async()=>{try{const r=await api.fetchApi("/interrupt",{method:"POST"});if(!r.ok)throw new Error("Interruzione non riuscita");closeLocal();}catch(e){status.textContent=e.message;}};
@@ -124,7 +136,7 @@ app.registerExtension({
   },
   setup(){
     api.addEventListener("dogma-local126-review",e=>showLocal(e.detail));
-    api.addEventListener("dogma-local126-closed",e=>{if(e.detail?.token===active?.token)closeLocal();});
+    api.addEventListener("dogma-local126-closed",e=>{rememberSubmitted(e.detail?.token);if(e.detail?.token===active?.token)closeLocal();});
     let polling=false;
     const pending=async()=>{
       if(polling)return;polling=true;
@@ -132,7 +144,8 @@ app.registerExtension({
         const r=await api.fetchApi("/dogma/local126/pending");if(!r.ok)return;
         const data=await r.json();
         if(active&&!data.items?.some(p=>p.token===active.token))closeLocal();
-        const p=data.items?.find(p=>p.token===active?.token)||data.items?.[0];if(p)showLocal(p);
+        const visible=data.items?.filter(p=>!submitted.has(p.token)&&p.phase!=="render")||[];
+        const p=visible.find(p=>p.token===active?.token)||visible[0];if(p)showLocal(p);
       }catch(_){}finally{polling=false;}
     };
     api.addEventListener("reconnected",pending);pending();setInterval(pending,4000);

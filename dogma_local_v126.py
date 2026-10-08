@@ -12,7 +12,7 @@ from . import dogma_signs_v125 as old
 
 PENDING = {}
 LOCK = threading.Lock()
-CATEGORY = 'DOGMA/Local Inpaint 1.0.28'
+CATEGORY = 'DOGMA/Local Inpaint 1.0.29'
 CONTEXT = ('Milan, Italy, 1970s. Preserve the photograph and its physical objects. '
            'Use period-appropriate Italian graphics when requested. Match existing exposure, '
            'light direction, fog, material, wear, focus, grain and perspective. '
@@ -104,7 +104,7 @@ class DOGMALocalMasksV126:
 
 
 def card_payload(entry):
-    return dict(server_version='1.0.28', token=entry['token'], revision=entry['revision'], busy=entry['busy'],
+    return dict(server_version='1.0.29', phase=entry.get('phase', 'review'), token=entry['token'], revision=entry['revision'], busy=entry['busy'],
                 node_id=entry['node_id'], message=entry.get('message', ''),
                 items=[{k: j.get(k, '') for k in ('id', 'label', 'brief', 'exact_text', 'prompt', 'selected', 'error', 'preview', 'members')}
                        for j in entry['jobs']])
@@ -123,6 +123,7 @@ def enqueue(token, revision, action, items, ids):
         if action == 'skip':
             e['command'] = (action, [])
             e['busy'] = True
+            e['phase'] = 'render'
             return True, 'OK'
         allowed = {j['id'] for j in e['jobs']}
         if not isinstance(items, list) or len(items) != len(allowed):
@@ -156,6 +157,7 @@ def enqueue(token, revision, action, items, ids):
             j.update(incoming)
         e['command'] = (action, ids)
         e['busy'] = True
+        if action == 'render': e['phase'] = 'render'
         return True, 'OK'
 
 
@@ -166,7 +168,7 @@ def register_routes():
 
     @routes.get('/dogma/local126/pending')
     async def pending(request):
-        with LOCK: items = [card_payload(e) for e in PENDING.values() if not e['done']]
+        with LOCK: items = [card_payload(e) for e in PENDING.values() if not e['done'] and e.get('phase', 'review') == 'review']
         return web.json_response({'items': items})
 
     @routes.post('/dogma/local126/action')
@@ -264,6 +266,8 @@ def _improve_jobs(bundle, jobs, ids, model, memory):
                 "The human brief, if present, is authoritative: do not change its colors, arrow "
                 "direction, numbers, object type or exact text. If absent, infer the object purpose "
                 "from the image and propose coherent simple graphics. Do not transcribe damaged lettering. "
+                "Preserve the sign shape and symbol family: do not turn a blue circular direction sign into a triangular yield sign. "
+                "For a directional sign when the HUMAN BRIEF does not specify arrow direction, write 'one clear white arrow retaining the existing orientation'; do not name or invent a direction. "
                 "Describe only the edit, not a street scene. Preserve position, perspective, support, "
                 "exposure, haze, softness and grain. Painted objects are not luminous. "
                 "For symbols without requested lettering add no text; generic advertising may use "
@@ -312,7 +316,7 @@ class DOGMALocalReviewV126:
         previews(jobs)
         token = secrets.token_urlsafe(24)
         e = dict(token=token, revision=0, node_id=str(unique_id), jobs=jobs, command=None,
-                 busy=False, done=False, message='Prompt manuale facoltativo. Premi Applica: i prompt mancanti vengono preparati automaticamente.')
+                 busy=False, done=False, phase='review', message='Prompt manuale facoltativo. Premi Applica: i prompt mancanti vengono preparati automaticamente.')
         with LOCK: PENDING[token] = e
         def emit():
             with LOCK: payload = card_payload(e)
@@ -374,7 +378,7 @@ class DOGMALocalReviewV126:
         return dict(regions, jobs=jobs), mask, f'{len(jobs)} elementi approvati, ritaglio {regions["render_side"]}px. Esterno delle maschere espanse conservato.'
 
 
-def compose_local(base, generated, job, feather, match_photo, photo_strength, seed):
+def compose_local(base, generated, job, feather, match_photo, photo_strength, seed, preserve_grain=False):
     import numpy as np
     import torch
     import torch.nn.functional as F
@@ -402,10 +406,20 @@ def compose_local(base, generated, job, feather, match_photo, photo_strength, se
                 residual = im-ndimage.gaussian_filter(im, (.8, .8, 0))
                 values = residual[region]
                 return np.median(np.abs(values-np.median(values, axis=0)), axis=0)/.6745
-            needed = np.sqrt(np.maximum(noise_std(source, ring)**2-noise_std(patch, selected)**2, 0))
-            rng = np.random.default_rng(seed)
-            noise = .8*rng.normal(size=(h, w, 1)) + .6*rng.normal(size=(h, w, 3))
-            patch = patch + noise*needed*min(1., photo_strength/.85)
+            if preserve_grain:
+                # Reuse the photograph's fine texture, not freshly drawn white noise.
+                # Clip strong residuals so old symbol edges do not get copied back.
+                residual = source-ndimage.gaussian_filter(source, (.65, .65, 0))
+                limit = 2.5*noise_std(source, ring)
+                residual = np.clip(residual, -limit, limit)
+                amount = min(1., photo_strength/.85)
+                smooth = ndimage.gaussian_filter(patch, (.65, .65, 0))
+                patch = patch + amount*(smooth+residual-patch)
+            else:
+                needed = np.sqrt(np.maximum(noise_std(source, ring)**2-noise_std(patch, selected)**2, 0))
+                rng = np.random.default_rng(seed)
+                noise = .8*rng.normal(size=(h, w, 1)) + .6*rng.normal(size=(h, w, 3))
+                patch = patch + noise*needed*min(1., photo_strength/.85)
     distance = ndimage.distance_transform_edt(np.pad(selected, 1))[1:-1, 1:-1]
     radius = min(float(feather), max(0., float(distance.max())-1.))
     t = np.clip((distance-1.)/radius, 0., 1.) if radius > 0 else np.ones_like(distance)
@@ -428,12 +442,14 @@ class DOGMALocalRenderV126:
         schema = old.DOGMASignRenderV125.INPUT_TYPES()
         required = schema['required']
         required['approved_jobs'] = ('DOGMA_LOCAL_JOBS126',)
-        required['denoise'][1]['default'] = .95
+        required['denoise'][1]['default'] = .65
+        required['cfg'][1]['default'] = 2.5
+        required['cfg'][1]['tooltip'] = 'Denoise img2img: 2.5 come base. Edit con riferimento: 1.0 come base. Il valore viene usato senza modifiche nascoste.'
         required['feather_px'][1]['default'] = 8
         required['feather_px'][1]['tooltip'] = 'Sfumatura verso interno del bordo espanso, in pixel della foto originale. Vale per tutte le zone.'
         required['seed'][1]['control_after_generate'] = True
-        required['mode'] = (['Denoise', 'Edit'], {'default': 'Edit',
-            'tooltip': 'Edit rigenera la zona a 1.0. Denoise usa il valore reale: 0.50 puo conservare quasi interamente il difetto con Qwen 2.1.'})
+        required['mode'] = (['Denoise', 'Edit'], {'default': 'Denoise',
+            'tooltip': 'Denoise: img2img mascherato dalla foto, senza riferimento duplicato. Edit: immagine anche come riferimento, denoise 1.0. CFG consigliato: Denoise 2.5, Edit 1.0.'})
         schema.setdefault('optional', {}).update(match_photo=('BOOLEAN', {'default': True}),
             photo_strength=('FLOAT', {'default': .85, 'min': 0., 'max': 1., 'step': .05}))
         return schema
@@ -441,12 +457,12 @@ class DOGMALocalRenderV126:
     RETURN_NAMES = ('image', 'report')
     FUNCTION = 'render'
     CATEGORY = CATEGORY
-    def check_lazy_status(self, approved_jobs, mode='Edit', denoise=.95, model=None, clip=None, vae=None, **kwargs):
+    def check_lazy_status(self, approved_jobs, mode='Denoise', denoise=.65, model=None, clip=None, vae=None, **kwargs):
         effective = 1. if mode == 'Edit' else denoise
         return [k for k, v in (('model', model), ('clip', clip), ('vae', vae)) if v is None] if approved_jobs['jobs'] and effective > 0 else []
 
     def render(self, approved_jobs, steps, cfg, sampler_name, scheduler, denoise, seed, feather_px,
-               negative_prompt, vae_tile_size, mode='Edit', model=None, clip=None, vae=None,
+               negative_prompt, vae_tile_size, mode='Denoise', model=None, clip=None, vae=None,
                match_photo=True, photo_strength=.85):
         import torch
         from comfy.utils import ProgressBar
@@ -459,8 +475,8 @@ class DOGMALocalRenderV126:
         bar = ProgressBar(len(jobs)*4)
         notes = []
         union = torch.zeros(original.shape[:3], dtype=torch.bool, device=original.device)
-        if mode == 'Denoise' and effective <= .5:
-            old.progress('ATTENZIONE: denoise <= 0.50 puo lasciare quasi invariata la grafica. Per ricostruire un simbolo usare Edit.')
+        if mode == 'Denoise' and cfg < 2:
+            old.progress('Denoise img2img: CFG basso. Per maggiore aderenza al prompt provare CFG 2.5.')
         for index, small in enumerate(jobs):
             old.progress(f'{index+1}/{len(jobs)} {small["label"]}: {mode}, denoise={effective:.2f}, lato {approved_jobs["render_side"]}')
             mask = full_mask(original, small)
@@ -480,11 +496,23 @@ class DOGMALocalRenderV126:
                     if self.first is None: self.first = value
                     return value
             proxy = ReferenceVAE()
-            cond = old.node('TextEncodeQwenImage21').execute(clip=clip, prompt=instruction,
-                negative_prompt=negative_prompt, vae=proxy, resolution=0,
-                images={'image_1': job['image']})
-            if proxy.first is None: raise ValueError('Codifica Qwen 2.1 non compatibile: aggiorna ComfyUI.')
-            latent = {'samples': proxy.first, 'noise_mask': job['noise_mask'][:, None]}
+            if mode == 'Denoise':
+                # True masked img2img. The photograph already supplies the source
+                # latent; duplicating it as reference conditions the model to copy
+                # the damaged symbol as well, even when the prompt requests repair.
+                instruction = (prompt.replace('<image1>', 'the photograph') +
+                    '\nA photographic result of the requested corrected object, at its existing position and size. ' +
+                    approved_jobs['context'])
+                cond = old.node('TextEncodeQwenImage21').execute(clip=clip, prompt=instruction,
+                    negative_prompt=negative_prompt, resolution=0, images={})
+                initial = proxy.encode(job['image'])
+            else:
+                cond = old.node('TextEncodeQwenImage21').execute(clip=clip, prompt=instruction,
+                    negative_prompt=negative_prompt, vae=proxy, resolution=0,
+                    images={'image_1': job['image']})
+                if proxy.first is None: raise ValueError('Codifica Qwen 2.1 non compatibile: aggiorna ComfyUI.')
+                initial = proxy.first
+            latent = {'samples': initial, 'noise_mask': job['noise_mask'][:, None]}
             bar.update_absolute(index*4+1)
             sampled = old.node('KSampler')().sample(model, (seed+small['id']-1)&0xffffffffffffffff,
                 steps, cfg, sampler_name, scheduler, cond[0], cond[1], latent, denoise=effective)[0]
@@ -492,16 +520,17 @@ class DOGMALocalRenderV126:
             patch = old.node('VAEDecodeTiled')().decode(vae, sampled, vae_tile_size, 128)[0]
             bar.update_absolute(index*4+3)
             result, raw_delta, applied_delta = compose_local(result, patch, job, feather_px,
-                match_photo, photo_strength, (seed+small['id']-1)&0xffffffffffffffff)
+                match_photo, photo_strength, (seed+small['id']-1)&0xffffffffffffffff, preserve_grain=mode == 'Denoise')
             union |= mask.to(original.device) > 0
-            warning = '\nATTENZIONE: variazione minima. Se il difetto resta, usare Edit o un prompt di sostituzione esplicito.' if raw_delta < 1.5 else ''
+            warning = '\nATTENZIONE: variazione minima. Precisare la forma richiesta e aumentare gradualmente Denoise o CFG.' if raw_delta < 1.5 else ''
             if small.get('error'): warning += '\n' + small['error']
-            notes.append(f'{small["label"]} | {mode} denoise={effective:.2f} | crop {job["image"].shape[2]}x{job["image"].shape[1]} | delta generato {raw_delta:.2f}/255, applicato {applied_delta:.2f}/255{warning}\n{prompt}')
+            path = 'img2img senza reference' if mode == 'Denoise' else 'edit con reference'
+            notes.append(f'{small["label"]} | {mode} denoise={effective:.2f} CFG={cfg:.2f} | {path} | crop {job["image"].shape[2]}x{job["image"].shape[1]} | delta generato {raw_delta:.2f}/255, applicato {applied_delta:.2f}/255{warning}\n{prompt}')
             bar.update_absolute(index*4+4)
             del cond, latent, sampled, patch, proxy, job
         if not torch.equal(result[~union], original[~union]):
             raise RuntimeError('Pixel fuori maschera modificati: risultato non consegnato.')
-        return result, 'DOGMA INPAINT 1.0.28 | Espansione ' + str(approved_jobs.get('mask_expand_px', 0)) + ' px | Sfumatura ' + str(feather_px) + ' px\nPixel RGB esterni alle maschere espanse identici all\'input.\n\n' + '\n\n'.join(notes)
+        return result, 'DOGMA INPAINT 1.0.29 | Espansione ' + str(approved_jobs.get('mask_expand_px', 0)) + ' px | Sfumatura ' + str(feather_px) + ' px\nPixel RGB esterni alle maschere espanse identici all\'input.\n\n' + '\n\n'.join(notes)
 
 
 NODE_CLASS_MAPPINGS = {c.__name__: c for c in (DOGMALocalMasksV126, DOGMALocalReviewV126, DOGMALocalRenderV126)}
