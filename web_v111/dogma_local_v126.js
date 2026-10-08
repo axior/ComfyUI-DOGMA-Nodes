@@ -29,10 +29,10 @@ function showLocal(payload) {
   const close=el("button","Chiudi finestra (non interrompe)",dialog);
   Object.assign(close.style,{float:"right",padding:"8px"});
   el("h2", "Inpaint locale - descrivi ogni zona mascherata", dialog);
-  if(payload.server_version!=="1.0.30") {
+  if(payload.server_version!=="1.0.31") {
     const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare il workflow V6.",dialog);
     Object.assign(warning.style,{background:"#713d17",padding:"12px",fontWeight:"bold"});
-  } else el("p","DOGMA Inpaint 1.0.30 attivo",dialog);
+  } else el("p","DOGMA Inpaint 1.0.31 attivo",dialog);
   el("p", "A sinistra il ritaglio originale, a destra la zona modificabile in azzurro. Puoi indicare cosa deve diventare o scrivere un prompt manuale. Premi Applica: i prompt mancanti vengono preparati automaticamente. La zona azzurra include l’espansione impostata nel workflow. Ogni ritaglio viene lavorato a 2K con le impostazioni predefinite.", dialog);
   const grid = el("div", null, dialog);
   Object.assign(grid.style, {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,430px),1fr))",gap:"16px"});
@@ -95,7 +95,7 @@ function showLocal(payload) {
     const group=el("input",null,groupLabel); group.type="checkbox";
     group.setAttribute("aria-label",`Unisci zona ${item.id}`); editable.push(group);
     el("span"," Unisci questa zona con altre selezionate per l'unione",groupLabel);
-    const entry={id:item.id,check,brief,exact,prompt,group,mode,denoise,modeHint,refine,maskChoice,canRefine:!!payload.can_refine&&item.members?.length===1}; entries.push(entry);
+    const entry={id:item.id,check,brief,exact,prompt,group,mode,denoise,modeHint,refine,maskChoice,generatedPrompt:item.generated_prompt,promptMode:item.prompt_mode,canRefine:!!payload.can_refine&&item.members?.length===1}; entries.push(entry);
     mode.onchange=update;denoise.oninput=update;
     // Optional wording edits must never erase an existing prompt.
     brief.oninput=()=>{entry.briefChanged=true;update();}; exact.oninput=update;
@@ -131,7 +131,8 @@ function showLocal(payload) {
     apply.disabled=!selected.length;
     const missing=selected.filter(e=>!e.prompt.value.trim()).map(e=>e.id);
     const changed=selected.filter(e=>e.briefChanged&&e.prompt.value.trim()).map(e=>e.id);
-    status.textContent=`${selected.length} zone selezionate. `+(missing.length?`Preparazione automatica al clic su Applica per le zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: il prompt compilato ha precedenza; svuotalo per rigenerarlo automaticamente. `:"")+(payload.message||"");
+    const modeChanged=selected.filter(e=>e.generatedPrompt&&e.generatedPrompt===e.prompt.value&&e.promptMode!==e.mode.value).map(e=>e.id);
+    status.textContent=`${selected.length} zone selezionate. `+(modeChanged.length?`Modalita cambiata nelle zone ${modeChanged.join(', ')}: il prompt automatico verra adattato su Applica. Per vederlo prima, premi Migliora questo prompt. `:"")+(missing.length?`Preparazione automatica al clic su Applica per le zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: il prompt compilato ha precedenza; svuotalo per rigenerarlo automaticamente. `:"")+(payload.message||"");
   }
   async function send(action,ids=[]){
     if(localBusy)return;
