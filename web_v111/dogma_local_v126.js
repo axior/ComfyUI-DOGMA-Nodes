@@ -56,8 +56,8 @@ function showLocal(payload) {
     group.setAttribute("aria-label",`Unisci zona ${item.id}`); editable.push(group);
     el("span"," Unisci questa zona con altre selezionate per l'unione",groupLabel);
     const entry={id:item.id,check,brief,exact,prompt,group}; entries.push(entry);
-    const invalidate=()=>{prompt.value="";update();};
-    brief.oninput=invalidate; exact.oninput=invalidate;
+    // Optional wording edits must never erase an existing prompt.
+    brief.oninput=()=>{entry.briefChanged=true;update();}; exact.oninput=update;
     check.onchange=update; group.onchange=update; prompt.oninput=update;
     improve.onclick=()=>send("improve",[item.id]);
     entry.improve=improve;
@@ -82,7 +82,9 @@ function showLocal(payload) {
     improveAll.disabled=!selected.length||selected.some(e=>!e.brief.value.trim());
     merge.disabled=entries.filter(e=>e.group.checked).length<2;
     apply.disabled=!selected.length||selected.some(e=>!e.prompt.value.trim());
-    status.textContent=`${selected.length} zone selezionate. `+(apply.disabled&&selected.length?"Completa i prompt finali. ":"")+(payload.message||"");
+    const missing=selected.filter(e=>!e.prompt.value.trim()).map(e=>e.id);
+    const changed=selected.filter(e=>e.briefChanged&&e.prompt.value.trim()).map(e=>e.id);
+    status.textContent=`${selected.length} zone selezionate. `+(missing.length?`Prompt finale mancante nelle zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: controlla o rigenera il prompt conservato. `:"")+(payload.message||"");
   }
   async function send(action,ids=[]){
     if(localBusy)return;
@@ -110,7 +112,7 @@ app.registerExtension({
   name:"DOGMA.Local.v126",
   nodeCreated(node){
     if(!/^DOGMALocal(?:Masks|Review|Render)V126$/.test(node.comfyClass||node.type||""))return;
-    const labels={context_px:"CONTESTO INTORNO ALLA ZONA",render_side:"LATO LUNGO RITAGLIO",project_context:"CONTESTO DEL PROGETTO",rerun:"NUOVA REVISIONE",vision_model:"QWEN MIGLIORA PROMPT",memory_mode:"GESTIONE MEMORIA",mode:"MODALITA DENOISE / EDIT",denoise:"INTENSITA DENOISE (EDIT USA 1.00)",feather_px:"SFUMATURA INTERNA",vae_tile_size:"VAE TILED",seed:"SEED",negative_prompt:"PROMPT NEGATIVO"};
+    const labels={match_photo:"INTEGRAZIONE FOTO",photo_strength:"INTENSITA INTEGRAZIONE",context_px:"CONTESTO INTORNO ALLA ZONA",render_side:"LATO LUNGO RITAGLIO",project_context:"CONTESTO DEL PROGETTO",rerun:"NUOVA REVISIONE",vision_model:"QWEN MIGLIORA PROMPT",memory_mode:"GESTIONE MEMORIA",mode:"MODALITA DENOISE / EDIT",denoise:"INTENSITA DENOISE (EDIT USA 1.00)",feather_px:"SFUMATURA INTERNA",vae_tile_size:"VAE TILED",seed:"SEED",negative_prompt:"PROMPT NEGATIVO"};
     for(const w of node.widgets||[])if(labels[w.name])w.label=labels[w.name];
   },
   setup(){
