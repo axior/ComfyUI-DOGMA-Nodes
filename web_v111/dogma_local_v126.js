@@ -29,10 +29,10 @@ function showLocal(payload) {
   const close=el("button","Chiudi finestra (non interrompe)",dialog);
   Object.assign(close.style,{float:"right",padding:"8px"});
   el("h2", "Inpaint locale - descrivi ogni zona mascherata", dialog);
-  if(payload.server_version!=="1.0.29") {
-    const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare il workflow V4.",dialog);
+  if(payload.server_version!=="1.0.30") {
+    const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare il workflow V6.",dialog);
     Object.assign(warning.style,{background:"#713d17",padding:"12px",fontWeight:"bold"});
-  } else el("p","DOGMA Inpaint 1.0.29 attivo",dialog);
+  } else el("p","DOGMA Inpaint 1.0.30 attivo",dialog);
   el("p", "A sinistra il ritaglio originale, a destra la zona modificabile in azzurro. Puoi indicare cosa deve diventare o scrivere un prompt manuale. Premi Applica: i prompt mancanti vengono preparati automaticamente. La zona azzurra include l’espansione impostata nel workflow. Ogni ritaglio viene lavorato a 2K con le impostazioni predefinite.", dialog);
   const grid = el("div", null, dialog);
   Object.assign(grid.style, {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,430px),1fr))",gap:"16px"});
@@ -55,6 +55,34 @@ function showLocal(payload) {
     const params = new URLSearchParams({filename:item.preview.filename,subfolder:item.preview.subfolder||"",type:item.preview.type||"temp"});
     img.src=api.apiURL(`/view?${params}`); img.alt="Originale e maschera della zona";
     Object.assign(img.style,{width:"100%",maxHeight:"280px",objectFit:"contain",display:"block",margin:"12px 0"});
+    const refine=el("button","Raffina maschera",card);
+    refine.setAttribute("aria-label",`Raffina maschera zona ${item.id}`);actionButtons.push(refine);
+    el("label"," Maschera da usare",card);
+    const maskChoice=el("select",null,card);maskChoice.setAttribute("aria-label",`Maschera zona ${item.id}`);
+    for(const name of ["Originale","Raffinata"]){
+      const option=el("option",name,maskChoice);option.value=name;
+      if(name==="Raffinata"&&!item.mask_previews?.Raffinata)option.disabled=true;
+    }
+    maskChoice.value=item.mask_choice||"Originale";editable.push(maskChoice);
+    Object.assign(maskChoice.style,{padding:"8px",margin:"8px"});
+    if(item.mask_note)el("p",item.mask_note,card);
+    maskChoice.onchange=()=>{
+      const preview=item.mask_previews?.[maskChoice.value]||item.preview;
+      img.src=api.apiURL(`/view?${new URLSearchParams({filename:preview.filename,subfolder:preview.subfolder||"",type:preview.type||"temp"})}`);
+      update();
+    };
+    refine.onclick=()=>send("refine",[item.id]);
+    el("label","Approccio per questa zona",card);
+    const mode=el("select",null,card);
+    for(const value of ["Denoise","Edit"]){const option=el("option",value,mode);option.value=value;}
+    mode.value=item.mode||"Denoise";mode.setAttribute("aria-label",`Modalita zona ${item.id}`);
+    Object.assign(mode.style,{display:"block",padding:"8px",margin:"6px 0"});editable.push(mode);
+    el("label","Intensita Denoise (0–1)",card);
+    const denoise=el("input",null,card);denoise.type="number";denoise.min="0";denoise.max="1";denoise.step="0.05";
+    denoise.value=String(Number.isFinite(item.denoise)?item.denoise:0.65);
+    denoise.setAttribute("aria-label",`Denoise zona ${item.id}`);editable.push(denoise);
+    Object.assign(denoise.style,{padding:"8px",margin:"6px 0"});
+    const modeHint=el("p","",card);
     const brief=field("textarea","Descrizione breve (facoltativa, da sviluppare automaticamente)",item.brief,2000,card,`Descrizione zona ${item.id}`);
     brief.placeholder="Es. cartello blu con freccia bianca diagonale verso destra in alto";
     const exact=field("textarea","Testo esatto (facoltativo)",item.exact_text,500,card,`Testo esatto zona ${item.id}`);
@@ -67,7 +95,8 @@ function showLocal(payload) {
     const group=el("input",null,groupLabel); group.type="checkbox";
     group.setAttribute("aria-label",`Unisci zona ${item.id}`); editable.push(group);
     el("span"," Unisci questa zona con altre selezionate per l'unione",groupLabel);
-    const entry={id:item.id,check,brief,exact,prompt,group}; entries.push(entry);
+    const entry={id:item.id,check,brief,exact,prompt,group,mode,denoise,modeHint,refine,maskChoice,canRefine:!!payload.can_refine&&item.members?.length===1}; entries.push(entry);
+    mode.onchange=update;denoise.oninput=update;
     // Optional wording edits must never erase an existing prompt.
     brief.oninput=()=>{entry.briefChanged=true;update();}; exact.oninput=update;
     check.onchange=update; group.onchange=update; prompt.oninput=update;
@@ -86,11 +115,16 @@ function showLocal(payload) {
   const hide=el("button","Nascondi finestra",controls);
   const stop=el("button","Interrompi esecuzione",controls);
   actionButtons.push(improveAll,selectAll,deselectAll,merge,apply,skip);
-  function snapshot(){return entries.map(e=>({id:e.id,selected:e.check.checked,brief:e.brief.value,exact_text:e.exact.value,prompt:e.prompt.value}));}
+  function snapshot(){return entries.map(e=>({id:e.id,selected:e.check.checked,brief:e.brief.value,exact_text:e.exact.value,prompt:e.prompt.value,mode:e.mode.value,denoise:Number(e.denoise.value),mask_choice:e.maskChoice.value}));}
   function update(){
     const selected=entries.filter(e=>e.check.checked);
     for(const f of editable) f.disabled=localBusy;
     for(const b of actionButtons) b.disabled=localBusy;
+    for(const e of entries){
+      e.refine.disabled=localBusy||!e.canRefine;
+      e.denoise.disabled=localBusy||e.mode.value==="Edit";
+      e.modeHint.textContent=e.mode.value==="Edit"?"Edit: denoise effettivo 1,00 automatico. Il valore Denoise resta memorizzato per quando torni a Denoise.":"Denoise: viene usato il valore di questa zona. 0 conserva l’originale.";
+    }
     if(localBusy){status.textContent="Operazione in corso. Il popup si aggiornera al termine; puoi nasconderlo durante l'attesa.";return;}
     improveAll.disabled=!selected.length;
     merge.disabled=entries.filter(e=>e.group.checked).length<2;
@@ -133,6 +167,18 @@ app.registerExtension({
     if(!/^DOGMALocal(?:Masks|Review|Render)V126$/.test(node.comfyClass||node.type||""))return;
     const labels={mask_expand_px:"ESPANSIONE MASCHERE (PX ORIGINALI)",match_photo:"INTEGRAZIONE FOTO",photo_strength:"INTENSITA INTEGRAZIONE",context_px:"CONTESTO INTORNO ALLA ZONA",render_side:"LATO LUNGO RITAGLIO",project_context:"CONTESTO DEL PROGETTO",rerun:"NUOVA REVISIONE",vision_model:"QWEN MIGLIORA PROMPT",memory_mode:"GESTIONE MEMORIA",mode:"MODALITA DENOISE / EDIT",denoise:"INTENSITA DENOISE (EDIT USA 1.00)",feather_px:"SFUMATURA BORDI - TUTTE LE MASCHERE",vae_tile_size:"VAE TILED",seed:"SEED",negative_prompt:"PROMPT NEGATIVO"};
     for(const w of node.widgets||[])if(labels[w.name])w.label=labels[w.name];
+    const extra={selection_mode:"SELEZIONE: MANUALE / AUTOMATICO",auto_detail:"RICERCA AUTOMATICA",auto_threshold:"SOGLIA RILEVAMENTO",auto_max_regions:"MAX ZONE AUTOMATICHE",default_mode:"MODALITA INIZIALE POPUP",default_denoise:"DENOISE INIZIALE POPUP",reuse_approved:"RIUSA ZONE E PROMPT APPROVATI",review_revision:"REVISIONE POPUP",rerun:"REVISIONE MASCHERE E PROMPT"};
+    for(const w of node.widgets||[])if(extra[w.name])w.label=extra[w.name];
+    for(const w of node.widgets||[])if(w.name==="refine_manual_masks")w.label="RAFFINA MASCHERE MANUALI";
+    const type=node.comfyClass||node.type;
+    const counter=type==="DOGMALocalMasksV126"?"rerun":type==="DOGMALocalReviewV126"?"review_revision":null;
+    if(counter&&node.addWidget){
+      const caption=counter==="rerun"?"Rifai maschere e prompt alla prossima Queue":"Riapri popup mantenendo i prompt alla prossima Queue";
+      node.addWidget("button",caption,null,()=>{
+        const w=node.widgets?.find(w=>w.name===counter);
+        if(w){w.value=(Number(w.value)||0)+1;node.setDirtyCanvas?.(true,true);}
+      },{serialize:false});
+    }
   },
   setup(){
     api.addEventListener("dogma-local126-review",e=>showLocal(e.detail));
