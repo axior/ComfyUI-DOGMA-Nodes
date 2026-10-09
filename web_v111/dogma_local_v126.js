@@ -29,11 +29,12 @@ function showLocal(payload) {
   const close=el("button","Chiudi finestra (non interrompe)",dialog);
   Object.assign(close.style,{float:"right",padding:"8px"});
   el("h2", "Inpaint locale - descrivi ogni zona mascherata", dialog);
-  if(payload.server_version!=="1.0.31") {
-    const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare il workflow V6.",dialog);
+  if(payload.server_version!=="1.0.32") {
+    const warning=el("p","ATTENZIONE: ComfyUI sta eseguendo una versione precedente dei nodi. Riavvia ComfyUI e ricarica questa pagina prima di usare le reference per zona.",dialog);
     Object.assign(warning.style,{background:"#713d17",padding:"12px",fontWeight:"bold"});
-  } else el("p","DOGMA Inpaint 1.0.31 attivo",dialog);
+  } else el("p","DOGMA Inpaint 1.0.32 attivo",dialog);
   el("p", "A sinistra il ritaglio originale, a destra la zona modificabile in azzurro. Puoi indicare cosa deve diventare o scrivere un prompt manuale. Premi Applica: i prompt mancanti vengono preparati automaticamente. La zona azzurra include l’espansione impostata nel workflow. Ogni ritaglio viene lavorato a 2K con le impostazioni predefinite.", dialog);
+  el("p", "Puoi caricare una reference diversa per ogni zona, usata da Qwen sia in Edit sia in Denoise. Le reference vengono conservate sul server insieme alle decisioni; non sono incluse nel file JSON del workflow.", dialog);
   const grid = el("div", null, dialog);
   Object.assign(grid.style, {display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(min(100%,430px),1fr))",gap:"16px"});
   const entries = [], editable = [], actionButtons = [];
@@ -83,6 +84,21 @@ function showLocal(payload) {
     denoise.setAttribute("aria-label",`Denoise zona ${item.id}`);editable.push(denoise);
     Object.assign(denoise.style,{padding:"8px",margin:"6px 0"});
     const modeHint=el("p","",card);
+    el("strong","Reference di questa zona (facoltativa)",card);
+    const referenceImage=el("img",null,card);
+    referenceImage.alt=`Reference zona ${item.id}`;
+    Object.assign(referenceImage.style,{display:"none",width:"100%",maxHeight:"200px",objectFit:"contain",margin:"8px 0"});
+    const referenceName=el("p","Nessuna reference",card);
+    const upload=el("button","Carica reference",card);
+    upload.setAttribute("aria-label",`Carica reference zona ${item.id}`);actionButtons.push(upload);
+    const removeReference=el("button","Rimuovi reference",card);
+    removeReference.setAttribute("aria-label",`Rimuovi reference zona ${item.id}`);actionButtons.push(removeReference);
+    const referenceFile=el("input",null,card);referenceFile.type="file";
+    referenceFile.accept="image/png,image/jpeg,image/webp";referenceFile.style.display="none";
+    referenceFile.setAttribute("aria-label",`File reference zona ${item.id}`);editable.push(referenceFile);
+    const referenceBrief=field("textarea","Cosa riprendere dalla reference (facoltativo)",item.reference_brief,1000,card,`Uso reference zona ${item.id}`);
+    referenceBrief.placeholder="Es. riprendi simbolo e colori, ma usa il testo che ho indicato e la luce della foto.";
+    referenceBrief.style.minHeight="55px";
     const brief=field("textarea","Descrizione breve (facoltativa, da sviluppare automaticamente)",item.brief,2000,card,`Descrizione zona ${item.id}`);
     brief.placeholder="Es. cartello blu con freccia bianca diagonale verso destra in alto";
     const exact=field("textarea","Testo esatto (facoltativo)",item.exact_text,500,card,`Testo esatto zona ${item.id}`);
@@ -96,6 +112,46 @@ function showLocal(payload) {
     group.setAttribute("aria-label",`Unisci zona ${item.id}`); editable.push(group);
     el("span"," Unisci questa zona con altre selezionate per l'unione",groupLabel);
     const entry={id:item.id,check,brief,exact,prompt,group,mode,denoise,modeHint,refine,maskChoice,generatedPrompt:item.generated_prompt,promptMode:item.prompt_mode,canRefine:!!payload.can_refine&&item.members?.length===1}; entries.push(entry);
+    Object.assign(entry,{reference:item.reference||null,referenceBrief,removeReference});
+    function referencePreview(){
+      const ref=entry.reference;
+      referenceImage.style.display=ref?"block":"none";
+      referenceImage.src=ref?api.apiURL(`/view?${new URLSearchParams({filename:ref.filename,subfolder:ref.subfolder||"",type:"input"})}`):"";
+      referenceName.textContent=ref?`Reference caricata: ${ref.filename}`:"Nessuna reference";
+    }
+    referencePreview();
+    referenceBrief.oninput=()=>{entry.referenceChanged=true;update();};
+    upload.onclick=()=>referenceFile.click();
+    removeReference.onclick=()=>{entry.reference=null;entry.referenceChanged=true;referencePreview();update();};
+    referenceFile.onchange=async()=>{
+      const file=referenceFile.files?.[0];if(!file||localBusy)return;
+      localBusy=true;update();status.textContent=`Caricamento reference zona ${item.id}...`;
+      let uploadError=null;
+      try{
+        const ext=file.name.split('.').pop().toLowerCase();
+        if(!['png','jpg','jpeg','webp'].includes(ext))throw new Error("Usa una reference PNG, JPG o WebP.");
+        if(file.size>32*1024*1024)throw new Error("Reference troppo grande: massimo 32 MB.");
+        const data=new FormData();
+        // Simplepod may serve plain HTTP, where randomUUID is unavailable.
+        const uid=globalThis.crypto?.randomUUID?.()||`${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        const name=`dogma-ref-${uid}.${ext}`;
+        data.append("image",file,name);data.append("type","input");
+        data.append("subfolder","dogma_local_references");data.append("overwrite","false");
+        const response=await api.fetchApi("/upload/image",{method:"POST",body:data});
+        if(!response.ok)throw new Error("Caricamento non riuscito. La reference precedente e conservata.");
+        const result=await response.json();
+        if(typeof result.name!=="string"||!result.name)throw new Error("Risposta upload non valida.");
+        if(active?.token!==payload.token||active.revision!==payload.revision)return;
+        entry.reference={filename:result.name,subfolder:result.subfolder||"",type:"input"};
+        entry.referenceChanged=true;referencePreview();
+      }catch(error){uploadError=String(error.message||error);}
+      finally{
+        referenceFile.value="";
+        if(active?.token===payload.token&&active.revision===payload.revision){
+          localBusy=false;update();if(uploadError)status.textContent=uploadError;
+        }
+      }
+    };
     mode.onchange=update;denoise.oninput=update;
     // Optional wording edits must never erase an existing prompt.
     brief.oninput=()=>{entry.briefChanged=true;update();}; exact.oninput=update;
@@ -107,6 +163,8 @@ function showLocal(payload) {
   const controls=el("div",null,dialog);
   Object.assign(controls.style,{display:"flex",flexWrap:"wrap",gap:"10px",position:"sticky",bottom:"0",padding:"12px 0",background:"#20252b"});
   const improveAll=el("button","Migliora prompt selezionati",controls);
+  const clearPrompts=el("button","Svuota tutti i prompt finali",controls);
+  clearPrompts.title="Svuota il campo Prompt manuale / generato di tutte le zone. Descrizioni brevi, testo esatto e reference restano invariati.";
   const selectAll=el("button","Seleziona tutti",controls);
   const deselectAll=el("button","Deseleziona tutti",controls);
   const merge=el("button","Unisci zone contrassegnate",controls);
@@ -114,14 +172,15 @@ function showLocal(payload) {
   const skip=el("button","Conserva originale",controls);
   const hide=el("button","Nascondi finestra",controls);
   const stop=el("button","Interrompi esecuzione",controls);
-  actionButtons.push(improveAll,selectAll,deselectAll,merge,apply,skip);
-  function snapshot(){return entries.map(e=>({id:e.id,selected:e.check.checked,brief:e.brief.value,exact_text:e.exact.value,prompt:e.prompt.value,mode:e.mode.value,denoise:Number(e.denoise.value),mask_choice:e.maskChoice.value}));}
+  actionButtons.push(improveAll,clearPrompts,selectAll,deselectAll,merge,apply,skip);
+  function snapshot(){return entries.map(e=>({id:e.id,selected:e.check.checked,brief:e.brief.value,exact_text:e.exact.value,prompt:e.prompt.value,mode:e.mode.value,denoise:Number(e.denoise.value),mask_choice:e.maskChoice.value,reference:e.reference,reference_brief:e.referenceBrief.value}));}
   function update(){
     const selected=entries.filter(e=>e.check.checked);
     for(const f of editable) f.disabled=localBusy;
     for(const b of actionButtons) b.disabled=localBusy;
     for(const e of entries){
       e.refine.disabled=localBusy||!e.canRefine;
+      e.removeReference.disabled=localBusy||!e.reference;
       e.denoise.disabled=localBusy||e.mode.value==="Edit";
       e.modeHint.textContent=e.mode.value==="Edit"?"Edit: denoise effettivo 1,00 automatico. Il valore Denoise resta memorizzato per quando torni a Denoise.":"Denoise: viene usato il valore di questa zona. 0 conserva l’originale.";
     }
@@ -132,7 +191,8 @@ function showLocal(payload) {
     const missing=selected.filter(e=>!e.prompt.value.trim()).map(e=>e.id);
     const changed=selected.filter(e=>e.briefChanged&&e.prompt.value.trim()).map(e=>e.id);
     const modeChanged=selected.filter(e=>e.generatedPrompt&&e.generatedPrompt===e.prompt.value&&e.promptMode!==e.mode.value).map(e=>e.id);
-    status.textContent=`${selected.length} zone selezionate. `+(modeChanged.length?`Modalita cambiata nelle zone ${modeChanged.join(', ')}: il prompt automatico verra adattato su Applica. Per vederlo prima, premi Migliora questo prompt. `:"")+(missing.length?`Preparazione automatica al clic su Applica per le zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: il prompt compilato ha precedenza; svuotalo per rigenerarlo automaticamente. `:"")+(payload.message||"");
+    const referenceChanged=selected.filter(e=>e.referenceChanged).map(e=>e.id);
+    status.textContent=`${selected.length} zone selezionate. `+(referenceChanged.length?`Reference aggiornata nelle zone ${referenceChanged.join(', ')}: verra usata al render. I prompt automatici saranno adattati; quelli manuali restano invariati. `:"")+(modeChanged.length?`Modalita cambiata nelle zone ${modeChanged.join(', ')}: il prompt automatico verra adattato su Applica. Per vederlo prima, premi Migliora questo prompt. `:"")+(missing.length?`Preparazione automatica al clic su Applica per le zone: ${missing.join(', ')}. `:"")+(changed.length?`Descrizione cambiata nelle zone ${changed.join(', ')}: il prompt compilato ha precedenza; svuotalo per rigenerarlo automaticamente. `:"")+(payload.message||"");
   }
   async function send(action,ids=[]){
     if(localBusy)return;
@@ -149,6 +209,11 @@ function showLocal(payload) {
     }
   }
   improveAll.onclick=()=>send("improve",entries.filter(e=>e.check.checked).map(e=>e.id));
+  clearPrompts.onclick=()=>{
+    for(const e of entries)e.prompt.value="";
+    update();
+    status.textContent="Tutti i prompt finali sono stati svuotati. Descrizioni, testo esatto, reference e altre scelte conservati. Migliora prompt selezionati oppure Applica li rigenera per le zone selezionate.";
+  };
   selectAll.onclick=()=>{for(const e of entries)e.check.checked=true;update();};
   deselectAll.onclick=()=>{for(const e of entries)e.check.checked=false;update();};
   merge.onclick=()=>send("merge",entries.filter(e=>e.group.checked).map(e=>e.id));
@@ -168,6 +233,8 @@ app.registerExtension({
     if(!/^DOGMALocal(?:Masks|Review|Render)V126$/.test(node.comfyClass||node.type||""))return;
     const labels={mask_expand_px:"ESPANSIONE MASCHERE (PX ORIGINALI)",match_photo:"INTEGRAZIONE FOTO",photo_strength:"INTENSITA INTEGRAZIONE",context_px:"CONTESTO INTORNO ALLA ZONA",render_side:"LATO LUNGO RITAGLIO",project_context:"CONTESTO DEL PROGETTO",rerun:"NUOVA REVISIONE",vision_model:"QWEN MIGLIORA PROMPT",memory_mode:"GESTIONE MEMORIA",mode:"MODALITA DENOISE / EDIT",denoise:"INTENSITA DENOISE (EDIT USA 1.00)",feather_px:"SFUMATURA BORDI - TUTTE LE MASCHERE",vae_tile_size:"VAE TILED",seed:"SEED",negative_prompt:"PROMPT NEGATIVO"};
     for(const w of node.widgets||[])if(labels[w.name])w.label=labels[w.name];
+    const lyingLabels={lying_sigma:"LYING SIGMA - FORZA GLOBALE (0 = OFF)",lying_start:"LYING SIGMA - INIZIO (0-1)",lying_end:"LYING SIGMA - FINE (0-1)"};
+    for(const w of node.widgets||[])if(lyingLabels[w.name])w.label=lyingLabels[w.name];
     const extra={selection_mode:"SELEZIONE: MANUALE / AUTOMATICO",auto_detail:"RICERCA AUTOMATICA",auto_threshold:"SOGLIA RILEVAMENTO",auto_max_regions:"MAX ZONE AUTOMATICHE",default_mode:"MODALITA INIZIALE POPUP",default_denoise:"DENOISE INIZIALE POPUP",reuse_approved:"RIUSA ZONE E PROMPT APPROVATI",review_revision:"REVISIONE POPUP",rerun:"REVISIONE MASCHERE E PROMPT"};
     for(const w of node.widgets||[])if(extra[w.name])w.label=extra[w.name];
     for(const w of node.widgets||[])if(w.name==="refine_manual_masks")w.label="RAFFINA MASCHERE MANUALI";
