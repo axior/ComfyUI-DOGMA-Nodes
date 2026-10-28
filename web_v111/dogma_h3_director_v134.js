@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.36',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.37',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -36,8 +36,33 @@ export class DirectorStudio {
   const merge=(a,b)=>{for(const[k,v]of Object.entries(b||{}))a[k]=v&&typeof v==='object'&&!Array.isArray(v)?merge(a[k]||{},v):v;return a;};
   let stored;try{stored=JSON.parse(this.widget.value);}catch{stored={};}
   this.config=merge(clone(this.catalog.defaults),stored);
-  if(!stored.finish?.resolution&&stored.finish?.sigmas==='0.9035, 0.8, 0.6316, 0.3158, 0'){this.config.finish.sigmas='';this.config.finish.denoise=.18;}
   this.config.session ||= crypto.randomUUID();
+ }
+ family(task){return task==='ref2v'?'ref2v':'fl2v';}
+ turbo(task,steps){
+  const name=this.family(task)==='ref2v'?'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors':`minimax_h3_fl2v_turbo_${steps}step_v1.0${steps===4?'_768p':''}_comfyui_bf16.safetensors`;
+  return this.catalog.loras.find(x=>x.replaceAll('\\','/').split('/').pop()===name)||name;
+ }
+ preset(phase,kind='dogma',task=this.config.task){
+  const s=this.config[phase],base=clone(this.catalog.defaults[phase]);
+  for(const k of ['sampler','scheduler','steps','shift_video','shift_audio','lying','lying_start','lying_end','turbo_strength'])s[k]=base[k];
+  s.turbo=this.turbo(task,phase==='draft'?4:8);
+  if(phase==='finish'){
+   s.sigmas=kind==='conservative'?'':'0.9035, 0.8000, 0.6316, 0.3158, 0.0000';s.denoise=kind==='conservative'?.18:.35;
+   if(this.family(task)==='ref2v')s.steps=4;
+   for(const k of ['ultimate_steps','ultimate_denoise','ultimate_strength'])s[k]=base[k];
+   s.ultimate_turbo=this.turbo('i2v',8);
+  }
+ }
+ switchTask(previous){
+  const c=this.config,old=this.family(previous),next=this.family(c.task);
+  if(old!==next){
+   c.sampling_banks ||= {};c.sampling_banks[old]={draft:clone(c.draft),finish:clone(c.finish)};
+   const saved=c.sampling_banks[next];
+   if(saved){c.draft=clone(saved.draft);for(const k of ['turbo','turbo_strength','sampler','scheduler','steps','shift_video','shift_audio','lying','lying_start','lying_end','sigmas','denoise'])c.finish[k]=saved.finish[k];}
+   else{this.preset('draft');this.preset('finish');}
+  }
+  this.save();this.render();
  }
  save(){
   if(!this.config)return;
@@ -230,10 +255,8 @@ export class DirectorStudio {
  }
  prepare(body){
   const c=this.config;const intro=this.section(body,'Il tuo lavoro');const row=el('div','','dg-grid');intro.append(row);
-  this.field(row,'Nome lavoro',c,'job');this.field(row,'Cosa vuoi creare?',c,'task',{options:[['i2v','Da immagini · primo e/o ultimo frame'],['t2v','Da testo · nessuna immagine'],['ref2v','Da reference · immagini e video']],change:()=>{
-   // Turbo task adapters cannot be silently reused across different H3 checkpoints.
-   c.draft.turbo='';c.finish.turbo='';c.draft.steps=24;c.finish.steps=24;c.finish.sigmas='';this.save();this.render();
-  }});
+  const previousTask=c.task;
+  this.field(row,'Nome lavoro',c,'job');this.field(row,'Cosa vuoi creare?',c,'task',{options:[['i2v','Da immagini · primo e/o ultimo frame'],['t2v','Da testo · nessuna immagine'],['ref2v','Da reference · immagini e video']],change:()=>this.switchTask(previousTask)});
   this.field(intro,'Cartella output · vuoto = cartella Comfy',c,'output_dir',{hint:'Percorso assoluto sul computer dove gira Comfy. I video vengono copiati qui e restano visibili nella galleria.'});
   intro.append(button('Scegli cartella…',()=>this.browseFolders()));
   this.field(intro,'Genera audio nei video',c,'generate_audio',{type:'checkbox',hint:'Disattivato: provini e finali vengono esportati senza traccia audio. H3 mantiene internamente i latenti audiovisivi.'});
@@ -264,6 +287,10 @@ export class DirectorStudio {
   this.field(sizes,'Durata richiesta · secondi',c,'seconds',{type:'number',min:.2,max:15,step:.1});
   size.append(el('p','Dimensioni allineate a 32 px, durata alla griglia H3 (17k+5 frame a 24 fps). Il risultato indica le misure effettive. I provini piccoli possono cambiare movimento rispetto al finale; il tempo dipende da GPU, modello e LoRA.'));
   this.field(size,'Suono quando serve la tua attenzione',c,'sound',{type:'checkbox'});
+  const presets=this.section(body,'Preset DOGMA · provini');
+  presets.append(el('p',`Turbo: ${c.draft.turbo||'disattivata'} · ${c.draft.steps} step · ${c.draft.sampler}`));
+  presets.append(button('Ripristina DOGMA · Turbo 4 step',()=>{this.preset('draft');this.save();this.render();}));
+  presets.append(el('small','Le LoRA comuni e personali restano separate. Il ripristino cambia solo il campionamento dei provini.'));
   this.advanced(body);
   const go=button('Genera provini',()=>this.queue('draft'),'dg-primary');go.dataset.queue='';body.append(go);
  }
@@ -271,7 +298,7 @@ export class DirectorStudio {
   const c=this.config;const d=el('details','','dg-card');d.append(el('summary','Impostazioni avanzate · modelli, campionamento e anteprima'));body.append(d);
   const models=this.section(d,'Modelli installati');this.field(models,`Checkpoint ${c.task.toUpperCase()}`,c.models,c.task,{options:['',...this.catalog.models]});
   for(const [k,label,list]of[['clip','Text encoder',this.catalog.clip],['vae','Video VAE',this.catalog.vae],['audio','Audio VAE',this.catalog.vae]])this.field(models,label,c.models,k,{options:list});
-  models.append(el('p','Scegli il checkpoint e la LoRA Turbo adatti al tipo di generazione. Passare a un’altra modalità disattiva le Turbo precedenti: seleziona quelle compatibili.'));
+  models.append(el('p','I2V e T2V condividono le impostazioni FL2V. Ref2V conserva un preset separato con Turbo compatibile. Tornando a una modalità ritrovi le sue impostazioni.'));
   const p=this.section(d,'Provini');this.sampleFields(p,c.draft);
   const live=this.section(d,'Anteprima durante la generazione');this.field(live,'Anteprima KJ attiva',c.preview,'enabled',{type:'checkbox'});this.field(live,'Tiny VAE',c.preview,'tiny_vae',{options:this.catalog.tiny_vae});this.field(live,'Risoluzione massima',c.preview,'max_resolution',{type:'number',step:32,min:128,max:1024});
   live.append(el('p','Si aggiorna quando il sampler fornisce un passo. Non è un secondo video generato e non garantisce un aggiornamento ogni secondo.'));
@@ -311,19 +338,31 @@ export class DirectorStudio {
   if(!p){body.append(el('p','Scegli un provino dalla sezione Scegli.'));return;}
   const selected=this.section(body,p.label+' · selezionato');selected.append(film(p.video),el('p','Prompt, seed, sorgenti, modello e LoRA sono ripresi automaticamente da questo provino.'));
   const f=this.config.finish;const s=this.section(body,'Come vuoi finalizzare?');
+  const task=p.config?.task||this.config.task;
+  s.append(button('Ripristina DOGMA · primo preset video',()=>{this.preset('finish','dogma',task);this.save();this.render();}),button('Preset conservativo · denoise 0,18',()=>{this.preset('finish','conservative',task);this.save();this.render();}));
+  s.append(el('p',`Turbo raffinamento: ${f.turbo||'disattivata'} · ${f.sampler} · ${f.sigmas?Math.max(0,f.sigmas.split(',').length-1)+' intervalli dai sigma manuali':f.steps+' step, denoise '+f.denoise}. Ultimate: Turbo ${f.ultimate_turbo||'disattivata'} · ${f.ultimate_steps} step · denoise ${f.ultimate_denoise}.`));
+  s.append(el('small','Il primo preset video riprende i sigma delle prime versioni DOGMA: modifica più decisamente i dettagli. Il conservativo mantiene maggiormente il provino. Nessuno dei due garantisce un miglioramento per ogni scena.'));
   this.field(s,'Passaggi',f,'stages',{options:[['both','Completo · latent upscale + Ultimate'],['latent','Solo latent upscale e raffinamento'],['ultimate','Solo Ultimate dal provino']],change:()=>this.render()});
   this.field(s,'Risoluzione finale · lato lungo',f,'resolution',{options:[['1k','1K · 1024 px'],['2k','2K · 2048 px'],['3k','3K · 3072 px'],['4k','4K · 4096 px']],change:()=>this.render()});
   const edge={ '1k':1024,'2k':2048,'3k':3072,'4k':4096 }[f.resolution];
   s.append(el('p',`Uscita: ${Math.max(32,Math.round(p.width/Math.max(p.width,p.height)*edge/32)*32)} × ${Math.max(32,Math.round(p.height/Math.max(p.width,p.height)*edge/32)*32)} px. Proporzioni del provino, allineate a 32 px. Completo usa un passaggio latente fino a ×2 e Ultimate alla risoluzione scelta.`));
   s.append(el('small','Il raffinamento può modificare i dettagli. 3K/4K richiedono più memoria e tempo; il solo passaggio latente può superare la memoria disponibile.'));
+  this.field(s,'RIFE · fluidifica il video finale',this.config.rife,'enabled',{type:'checkbox',change:()=>this.render()});
+  if(this.config.rife.enabled){
+   this.field(s,'Fotogrammi al secondo finali',this.config.rife,'fps',{options:[[48,'48 fps · doppio dei fotogrammi'],[60,'60 fps']]});
+   s.append(el('p','Ordine: latent e raffinamento → RIFE → Ultimate. Con Solo latent si ferma dopo RIFE; con Solo Ultimate interpola prima dei tasselli. La durata e l’audio restano invariati. Il video interpolato viene salvato anche separatamente. Richiede ComfyUI-VFI e il modello RIFE installato.'));
+   if(!this.catalog.nodes.includes('RIFEInterpolation'))s.append(el('p','RIFE non disponibile: installa ComfyUI-VFI dal Manager oppure disattiva RIFE.'));
+  }
   const d=el('details','','dg-card');d.append(el('summary','Controlli finalizzazione'));body.append(d);this.sampleFields(d,f);
   this.field(d,'Modello latent upscale',f,'upscaler',{options:this.catalog.upscalers});this.field(d,'Sigma del raffinamento · vuoto usa scheduler',f,'sigmas');this.field(d,'Denoise raffinamento · solo senza sigma manuali',f,'denoise',{type:'number',step:.01,min:0,max:1});
   this.field(d,'Checkpoint FL2V per Ultimate',f,'ultimate_model',{options:this.catalog.models});this.field(d,'Turbo FL2V per Ultimate',f,'ultimate_turbo',{options:['',...this.catalog.loras]});this.field(d,'Potenza Turbo Ultimate',f,'ultimate_strength',{type:'number',step:.01});
   for(const [k,label,step]of[['tile_width','Larghezza tasselli',32],['tile_height','Altezza tasselli',32],['tile_padding','Contesto tasselli',8],['mask_blur','Sfumatura tasselli',1],['ultimate_steps','Step Ultimate',1],['ultimate_denoise','Denoise Ultimate',.01]])this.field(d,label,f,k,{type:'number',step});
+  this.field(d,'RIFE · batch (1 riduce la memoria)',this.config.rife,'batch_size',{type:'number',min:1,max:32,step:1});
   const go=button('Finalizza questo',()=>this.queue('finish'),'dg-primary');go.dataset.queue='';body.append(go,button('Torna ai provini',()=>{this.page='choose';this.render();}));this.live(body);
   const out=el('div','','dg-gallery');body.append(out);
   for(const item of (this.data.finals||[]).filter(x=>!x.candidate||x.candidate===p.id)){
    const card=this.section(out,item.label);card.append(film(item.video),el('p',item.saved_path||'Risultato precedente · cartella Comfy','dg-saved-path'));
+   if(item.fps)card.append(el('p',`${item.width} × ${item.height} · ${item.fps} fps · ${item.frames} fotogrammi · ${(item.frames/item.fps).toFixed(2)} s`));
    if(item.saved_path){const open=button('Apri cartella',async()=>{if(open.disabled)return;open.disabled=true;try{await this.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,id:item.id})});}catch(e){if(e.name!=='AbortError')this.fail(e.message);}finally{open.disabled=false;}});card.append(open);}
   }
  }

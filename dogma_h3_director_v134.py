@@ -30,7 +30,7 @@ def defaults():
                "shift_video":12., "shift_audio":3., "lying":0., "lying_start":.1,"lying_end":.9},
         finish={"stages":"both", "resolution":"2k", "scale":2., "turbo":"minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
                 "turbo_strength":1., "sampler":"er_sde", "scheduler":"simple", "steps":8,
-                "sigmas":"", "denoise":.18,
+                "sigmas":"0.9035, 0.8000, 0.6316, 0.3158, 0.0000", "denoise":.35,
                 "shift_video":12.,"shift_audio":3.,"lying":0.,"lying_start":.1,"lying_end":.9,
                 "upscaler":"minimax_h3_latent_upscaler_3d_bf16.safetensors",
                 "ultimate_scale":1., "tile_width":768,"tile_height":512,"tile_padding":64,
@@ -38,6 +38,7 @@ def defaults():
                 "ultimate_model":"minimax_h3_fl2va_pruned_int8_convrot.safetensors",
                 "ultimate_turbo":"minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
                 "ultimate_strength":1.},
+        rife={"enabled":True,"fps":48,"model":"flownet.pkl","scale":1.,"batch_size":1,"fp16":True},
         preview={"enabled":True,"tiny_vae":"taeh3.safetensors","max_resolution":512,"frames":12,"fps":6})
 
 
@@ -52,10 +53,7 @@ def parse_config(raw):
     data=json.loads(raw) if isinstance(raw,str) else copy.deepcopy(raw)
     if not isinstance(data,dict): raise ValueError("Configurazione Director non valida.")
     c=merge(defaults(),data)
-    # Migrate the shipped high-noise refinement preset without overriding custom settings.
-    if 'resolution' not in data.get('finish',{}):
-        if c['finish']['sigmas']=='0.9035, 0.8, 0.6316, 0.3158, 0':
-            c['finish'].update(sigmas='',denoise=.18)
+    # Stored sampling settings always win. Restoring a preset is an explicit UI action.
     if c['finish']['resolution'] not in ('1k','2k','3k','4k'):
         raise ValueError('Risoluzione: scegli 1K, 2K, 3K o 4K.')
     c['session']=str(uuid.UUID(c['session']))
@@ -70,6 +68,9 @@ def parse_config(raw):
     if not 1<=float(c['finish']['scale'])<=4 or not 1<=float(c['finish']['ultimate_scale'])<=4:
         raise ValueError('Fattore upscale: da 1 a 4.')
     if c['finish']['stages'] not in ('both','latent','ultimate'): raise ValueError('Finalizzazione non valida.')
+    if int(c['rife']['fps']) not in (48,60): raise ValueError('RIFE: scegli 48 o 60 fps.')
+    if not 1<=int(c['rife']['batch_size'])<=32: raise ValueError('RIFE batch: da 1 a 32.')
+    if float(c['rife']['scale']) not in (.25,.5,1.,2.,4.): raise ValueError('Scala RIFE non valida.')
     if not 0<=int(c['seed'])<2**53: raise ValueError('Seed fuori intervallo.')
     for phase in ('draft','finish'):
         s=c[phase]
@@ -299,11 +300,24 @@ def decode(res,latent,generate_audio=True):
     return nodes.VAEDecode().decode(res['vae'],latent)[0],(VAEDecodeAudio.execute(res['audio'],latent)[0] if generate_audio else None)
 
 
-def save_video(images,audio,path,metadata):
+def rife_preflight(settings):
+    """Fail before inference, rather than let the third-party node download weights."""
+    import nodes, folder_paths, inspect
+    cls=nodes.NODE_CLASS_MAPPINGS.get('RIFEInterpolation')
+    if cls is None: raise ValueError('RIFE richiede ComfyUI-VFI. Installalo dal Manager oppure disattiva RIFE in Finalizza.')
+    name=settings['model']
+    if Path(name).name!=name or name!='flownet.pkl': raise ValueError('Modello RIFE non valido: usa flownet.pkl.')
+    base=Path(inspect.getfile(cls)).parent
+    paths=[base/'rife'/'train_log'/name,Path(folder_paths.models_dir)/'rife'/name,base/'models'/name]
+    if not any(p.is_file() for p in paths):
+        raise ValueError('Pesi RIFE flownet.pkl assenti. Configura ComfyUI-VFI o disattiva RIFE; nessun download automatico è stato avviato.')
+
+
+def save_video(images,audio,path,metadata,fps=24):
     from comfy_extras.nodes_video import CreateVideo
     from comfy_api.latest import Types
     path.parent.mkdir(parents=True,exist_ok=True)
-    video=CreateVideo.execute(images,24.,audio)[0]
+    video=CreateVideo.execute(images,float(fps),audio)[0]
     video.save_to(str(path),format=Types.VideoContainer('mp4'),codec=Types.VideoCodec('h264'),metadata={'dogma':metadata},crf=20)
 
 
@@ -385,6 +399,7 @@ class DOGMAH3DirectorEngineV2:
             else:
                 candidate=next((p for p in st.get('candidates',[]) if p['id']==c['selected']),None)
                 if candidate is None: raise ValueError('Seleziona un provino disponibile nella galleria.')
+                if c['rife']['enabled']: rife_preflight(c['rife'])
                 # Freeze source/prompt/model/LoRAs to selected trial; only finishing controls are editable.
                 frozen=parse_config(candidate['config']); frozen['finish']=c['finish']; frozen['preview']=c['preview']
                 res=load_resources(frozen); a=assets(frozen)
@@ -420,8 +435,18 @@ class DOGMAH3DirectorEngineV2:
                     images=torch.cat([F.interpolate(chunk.movedim(-1,1),size=(target_h,target_w),mode='bicubic',align_corners=False).movedim(1,-1).clamp(0,1) for chunk in images.split(8)])
                 intermediate=folder/(job+'_H3_LATENT.mp4' if stages!='ultimate' else job+'_H3_SCELTO.mp4')
                 save_video(images,audio,intermediate,candidate)
-                st.setdefault('finals',[]).append({'label':'Latent' if stages!='ultimate' else 'Provino scelto','candidate':candidate['id'],'video':view_file(intermediate),'saved_path':export_file(intermediate,c),'id':uuid.uuid4().hex})
-                update('running' if stages!='latent' else 'done','Passaggio salvato')
+                st.setdefault('finals',[]).append({'label':'Latent' if stages!='ultimate' else 'Provino scelto','candidate':candidate['id'],'video':view_file(intermediate),'saved_path':export_file(intermediate,c),'id':uuid.uuid4().hex,'fps':24,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
+                update('running','Passaggio a 24 fps salvato')
+                fps=24
+                if c['rife']['enabled']:
+                    r=c['rife']; fps=int(r['fps'])
+                    update('running',f'Finalizzazione · RIFE da 24 a {fps} fps, prima di Ultimate')
+                    images=call('RIFEInterpolation',unique_id,images=images,source_fps=24,target_fps=fps,
+                        scale=float(r['scale']),model_name=r['model'],batch_size=int(r['batch_size']),use_fp16=bool(r['fp16']))[0]
+                    out=folder/(job+f'_H3_RIFE_{fps}fps.mp4')
+                    save_video(images,audio,out,candidate,fps=fps)
+                    st['finals'].append({'label':f'RIFE · {fps} fps','candidate':candidate['id'],'video':view_file(out),
+                        'saved_path':export_file(out,c),'id':uuid.uuid4().hex,'fps':fps,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
                 if stages in ('both','ultimate'):
                     import torch.nn.functional as F
                     from comfy_extras.nodes_custom_sampler import Guider_Basic,BasicScheduler
@@ -449,8 +474,9 @@ class DOGMAH3DirectorEngineV2:
                         vae=res['vae'],seed=candidate['seed'],mode_type='Chess',tile_width=int(fin['tile_width']),tile_height=int(fin['tile_height']),
                         mask_blur=int(fin['mask_blur']),tile_padding=int(fin['tile_padding']),seam_fix_mode='None',seam_fix_denoise=.15,
                         seam_fix_mask_blur=8,seam_fix_width=64,seam_fix_padding=16,tile_overlap_mode='Reprocess Overlap',tiled_decode=True,batch_size=1,anchor_context=False)[0][:count]
-                    out=folder/(job+'_H3_ULTIMATE.mp4'); save_video(images,audio,out,candidate)
-                    st['finals'].append({'label':'Ultimate','candidate':candidate['id'],'video':view_file(out),'saved_path':export_file(out,c),'id':uuid.uuid4().hex})
+                    out=folder/(job+f'_H3_ULTIMATE_{fps}fps.mp4')
+                    save_video(images,audio,out,candidate,fps=fps)
+                    st['finals'].append({'label':f'Ultimate · {fps} fps','candidate':candidate['id'],'video':view_file(out),'saved_path':export_file(out,c),'id':uuid.uuid4().hex,'fps':fps,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
                 update('done','Finalizzazione completata. I passaggi sono salvati.',active=None)
             return {'ui':{'dogma_v2':[st]},'result':(st['message'],)}
         except Exception as exc:
