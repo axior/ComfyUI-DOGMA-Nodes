@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.37',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.38',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -43,8 +43,8 @@ export class DirectorStudio {
   const name=this.family(task)==='ref2v'?'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors':`minimax_h3_fl2v_turbo_${steps}step_v1.0${steps===4?'_768p':''}_comfyui_bf16.safetensors`;
   return this.catalog.loras.find(x=>x.replaceAll('\\','/').split('/').pop()===name)||name;
  }
- preset(phase,kind='dogma',task=this.config.task){
-  const s=this.config[phase],base=clone(this.catalog.defaults[phase]);
+ presetValues(phase,kind='dogma',task=this.config.task){
+  const s={},base=this.catalog.defaults[phase];
   for(const k of ['sampler','scheduler','steps','shift_video','shift_audio','lying','lying_start','lying_end','turbo_strength'])s[k]=base[k];
   s.turbo=this.turbo(task,phase==='draft'?4:8);
   if(phase==='finish'){
@@ -53,6 +53,29 @@ export class DirectorStudio {
    for(const k of ['ultimate_steps','ultimate_denoise','ultimate_strength'])s[k]=base[k];
    s.ultimate_turbo=this.turbo('i2v',8);
   }
+  return s;
+ }
+ preset(phase,kind='dogma',task=this.config.task){Object.assign(this.config[phase],this.presetValues(phase,kind,task));}
+ presetKind(phase,task=this.config.task){
+  const same=(a,b,k)=>k.includes('turbo')&&!k.includes('strength')?String(a).replaceAll('\\','/').split('/').pop()===String(b).replaceAll('\\','/').split('/').pop():k==='sigmas'?String(a).replace(/\s/g,'')===String(b).replace(/\s/g,''):String(a)===String(b);
+  for(const kind of phase==='draft'?['dogma']:['dogma','conservative']){
+   if(Object.entries(this.presetValues(phase,kind,task)).every(([k,v])=>same(this.config[phase][k],v,k)))return kind;
+  }
+  return 'custom';
+ }
+ refreshPresetMenus(){for(const x of this.dialog?.querySelectorAll('.dg-preset-select')||[])x.value=this.presetKind(x.dataset.phase,x.dataset.task);}
+ renderKeepDetails(){
+  const open=[...this.dialog.querySelectorAll('details')].map(x=>!!x.open);
+  this.render();[...this.dialog.querySelectorAll('details')].forEach((x,i)=>x.open=open[i]||false);
+ }
+ presetMenu(parent,phase,task=this.config.task){
+  const wrap=el('label','','dg-field');wrap.append(el('span','Preset di campionamento'));
+  const select=el('select','','dg-preset-select');select.dataset.phase=phase;select.dataset.task=task;
+  const options=phase==='draft'?[['dogma','Standard · Turbo 4 step (predefinito)']]:[['dogma','Standard · raffinamento DOGMA (predefinito)'],['conservative','Conservativo · denoise 0,18']];
+  for(const [value,label]of [...options,['custom','Personalizzato']]){const o=el('option',label);o.value=value;o.disabled=value==='custom';select.append(o);}
+  select.value=this.presetKind(phase,task);
+  select.onchange=()=>{if(select.value==='custom')return;this.preset(phase,select.value,task);this.save();this.renderKeepDetails();};
+  wrap.append(select,el('small','La scelta applica i parametri qui sotto. Le modifiche manuali sono indicate come Personalizzato. Le LoRA aggiuntive restano invariate.'));parent.append(wrap);
  }
  switchTask(previous){
   const c=this.config,old=this.family(previous),next=this.family(c.task);
@@ -153,7 +176,7 @@ export class DirectorStudio {
  applyState(d){
   const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length;
   this.data=d;
-  if(['ready','done','error'].includes(d.status)){this.pending=false;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
+  if(['ready','done','error'].includes(d.status)){this.pending=false;d.progress=null;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
   if(change&&this.page!=='prepare')this.render();else this.status();
  }
  async recover(render=true){
@@ -163,22 +186,23 @@ export class DirectorStudio {
    const q=await this.request('/queue');
    const jobs=[...(q.queue_running||[]),...(q.queue_pending||[])];
    const owned=jobs.find(x=>this.promptId?x[1]===this.promptId:JSON.stringify(x[2]||{}).includes(this.config.session));
-   if(owned){this.promptId=owned[1];this.pending=true;if(d.status!=='running'){d.status='running';d.message='In coda · attendo il motore';}}
+   if(owned){this.promptId=owned[1];this.pending=true;if(!['running','error'].includes(d.status)){d.status='running';d.message='In coda · attendo il motore';}}
    else if(d.status==='running'){
     d.status='idle';d.message=jobs.length?'DOGMA non è in esecuzione. Comfy sta elaborando un altro lavoro.':'Il lavoro DOGMA non è più in coda. I provini salvati restano disponibili; controlla eventuali errori in Comfy.';this.pending=false;
    }else if(!owned)this.pending=false;
-   if(owned&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
+   if(owned&&d.status==='running'&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
    if(render||JSON.stringify(d)!==JSON.stringify(this.data))this.applyState(d);else this.status();
   }catch(e){if(epoch===this.epoch&&e.name!=='AbortError'){this.data.message='Stato non disponibile: '+e.message;this.status();}}
   finally{if(epoch===this.epoch)this.recovering=false;}
  }
- fail(message){this.pending=false;this.data.status='error';this.data.message=message;this.status();this.sound();}
+ fail(message){this.pending=false;this.data.status='error';this.data.progress=null;this.data.message=message;this.status();this.sound();}
  status(){
   const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||'Prepara il lavoro, genera i provini e scegli quale continuare.';s.dataset.state=this.data.status;}
   this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting);
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
-  const stop=this.dialog?.querySelector('[data-stop]');if(stop)stop.disabled=!this.pending;
+  // Always allow a fresh queue check: UI state can lag behind a failed job.
+  const stop=this.dialog?.querySelector('[data-stop]');if(stop){stop.disabled=!!this.stopping;stop.textContent=this.pending?'Interrompi':'Verifica / interrompi';}
  }
  async queue(action){
   if(this.pending||this.submitting)return;this.submitting=true;this.armSound();
@@ -210,18 +234,22 @@ export class DirectorStudio {
   }catch(e){if(e.name!=='AbortError'){const detail=e.response?.node_errors||e.response?.error;this.fail(detail?JSON.stringify(detail,null,2):e.message);}}finally{this.submitting=false;this.status();}
  }
  async stop(){
+  if(this.stopping)return;this.stopping=true;this.status();
+  try{
   const q=await this.request('/queue');
-  if(q.queue_running?.some(x=>x[1]===this.promptId))await api.interrupt();
-  else if(q.queue_pending?.some(x=>x[1]===this.promptId))await this.request('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete:[this.promptId]})});
-  else {this.data.message='Nessun lavoro DOGMA da interrompere. Le altre generazioni non vengono fermate.';this.pending=false;this.status();return;}
+  const own=x=>this.promptId?x[1]===this.promptId:JSON.stringify(x[2]||{}).includes(this.config.session);
+  if(q.queue_running?.some(own))await api.interrupt();
+  else if(q.queue_pending?.some(own))await this.request('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete:q.queue_pending.filter(own).map(x=>x[1])})});
+  else {this.data.message=this.data.status==='error'?this.data.message+' · Coda verificata: questo lavoro è terminato.':'Nessun lavoro DOGMA da interrompere. Le altre generazioni non vengono fermate.';this.pending=false;this.data.progress=null;return;}
   this.data.message='Interruzione richiesta · attendo Comfy';this.status();
+  }finally{this.stopping=false;this.status();}
  }
  field(parent,label,obj,key,opts={}){
   const wrap=el('label','','dg-field');wrap.append(el('span',label));let x;
   if(opts.options){x=el('select');for(const value of opts.options){const [v,t,disabled]=Array.isArray(value)?value:[value,value];const o=el('option',t);o.value=v;o.disabled=!!disabled;x.append(o);}if(![...x.options].some(o=>o.value===String(obj[key]))&&obj[key]){const o=el('option',obj[key]+' · non disponibile');o.value=obj[key];x.append(o);}x.value=obj[key]??'';}
   else if(opts.multi){x=el('textarea');x.rows=opts.rows||5;x.value=obj[key]??'';}
   else{x=el('input');x.type=opts.type||'text';if(x.type==='checkbox')x.checked=!!obj[key];else x.value=obj[key]??'';if(opts.min!=null)x.min=opts.min;if(opts.max!=null)x.max=opts.max;if(opts.step!=null)x.step=opts.step;}
-  x.oninput=()=>{obj[key]=x.type==='checkbox'?x.checked:x.type==='number'?Number(x.value):x.value;this.save();};
+  x.oninput=()=>{obj[key]=x.type==='checkbox'?x.checked:x.type==='number'?Number(x.value):x.value;this.save();this.refreshPresetMenus();};
   x.onchange=()=>{x.oninput();opts.change?.();};wrap.append(x);if(opts.hint)wrap.append(el('small',opts.hint));parent.append(wrap);return x;
  }
  section(parent,title){const p=el('section','','dg-card');p.append(el('h2',title));parent.append(p);return p;}
@@ -287,10 +315,6 @@ export class DirectorStudio {
   this.field(sizes,'Durata richiesta · secondi',c,'seconds',{type:'number',min:.2,max:15,step:.1});
   size.append(el('p','Dimensioni allineate a 32 px, durata alla griglia H3 (17k+5 frame a 24 fps). Il risultato indica le misure effettive. I provini piccoli possono cambiare movimento rispetto al finale; il tempo dipende da GPU, modello e LoRA.'));
   this.field(size,'Suono quando serve la tua attenzione',c,'sound',{type:'checkbox'});
-  const presets=this.section(body,'Preset DOGMA · provini');
-  presets.append(el('p',`Turbo: ${c.draft.turbo||'disattivata'} · ${c.draft.steps} step · ${c.draft.sampler}`));
-  presets.append(button('Ripristina DOGMA · Turbo 4 step',()=>{this.preset('draft');this.save();this.render();}));
-  presets.append(el('small','Le LoRA comuni e personali restano separate. Il ripristino cambia solo il campionamento dei provini.'));
   this.advanced(body);
   const go=button('Genera provini',()=>this.queue('draft'),'dg-primary');go.dataset.queue='';body.append(go);
  }
@@ -299,7 +323,7 @@ export class DirectorStudio {
   const models=this.section(d,'Modelli installati');this.field(models,`Checkpoint ${c.task.toUpperCase()}`,c.models,c.task,{options:['',...this.catalog.models]});
   for(const [k,label,list]of[['clip','Text encoder',this.catalog.clip],['vae','Video VAE',this.catalog.vae],['audio','Audio VAE',this.catalog.vae]])this.field(models,label,c.models,k,{options:list});
   models.append(el('p','I2V e T2V condividono le impostazioni FL2V. Ref2V conserva un preset separato con Turbo compatibile. Tornando a una modalità ritrovi le sue impostazioni.'));
-  const p=this.section(d,'Provini');this.sampleFields(p,c.draft);
+  const p=this.section(d,'Campionamento dei provini');this.presetMenu(p,'draft');this.sampleFields(p,c.draft);
   const live=this.section(d,'Anteprima durante la generazione');this.field(live,'Anteprima KJ attiva',c.preview,'enabled',{type:'checkbox'});this.field(live,'Tiny VAE',c.preview,'tiny_vae',{options:this.catalog.tiny_vae});this.field(live,'Risoluzione massima',c.preview,'max_resolution',{type:'number',step:32,min:128,max:1024});
   live.append(el('p','Si aggiorna quando il sampler fornisce un passo. Non è un secondo video generato e non garantisce un aggiornamento ogni secondo.'));
  }
@@ -339,21 +363,20 @@ export class DirectorStudio {
   const selected=this.section(body,p.label+' · selezionato');selected.append(film(p.video),el('p','Prompt, seed, sorgenti, modello e LoRA sono ripresi automaticamente da questo provino.'));
   const f=this.config.finish;const s=this.section(body,'Come vuoi finalizzare?');
   const task=p.config?.task||this.config.task;
-  s.append(button('Ripristina DOGMA · primo preset video',()=>{this.preset('finish','dogma',task);this.save();this.render();}),button('Preset conservativo · denoise 0,18',()=>{this.preset('finish','conservative',task);this.save();this.render();}));
-  s.append(el('p',`Turbo raffinamento: ${f.turbo||'disattivata'} · ${f.sampler} · ${f.sigmas?Math.max(0,f.sigmas.split(',').length-1)+' intervalli dai sigma manuali':f.steps+' step, denoise '+f.denoise}. Ultimate: Turbo ${f.ultimate_turbo||'disattivata'} · ${f.ultimate_steps} step · denoise ${f.ultimate_denoise}.`));
-  s.append(el('small','Il primo preset video riprende i sigma delle prime versioni DOGMA: modifica più decisamente i dettagli. Il conservativo mantiene maggiormente il provino. Nessuno dei due garantisce un miglioramento per ogni scena.'));
   this.field(s,'Passaggi',f,'stages',{options:[['both','Completo · latent upscale + Ultimate'],['latent','Solo latent upscale e raffinamento'],['ultimate','Solo Ultimate dal provino']],change:()=>this.render()});
   this.field(s,'Risoluzione finale · lato lungo',f,'resolution',{options:[['1k','1K · 1024 px'],['2k','2K · 2048 px'],['3k','3K · 3072 px'],['4k','4K · 4096 px']],change:()=>this.render()});
   const edge={ '1k':1024,'2k':2048,'3k':3072,'4k':4096 }[f.resolution];
   s.append(el('p',`Uscita: ${Math.max(32,Math.round(p.width/Math.max(p.width,p.height)*edge/32)*32)} × ${Math.max(32,Math.round(p.height/Math.max(p.width,p.height)*edge/32)*32)} px. Proporzioni del provino, allineate a 32 px. Completo usa un passaggio latente fino a ×2 e Ultimate alla risoluzione scelta.`));
   s.append(el('small','Il raffinamento può modificare i dettagli. 3K/4K richiedono più memoria e tempo; il solo passaggio latente può superare la memoria disponibile.'));
-  this.field(s,'RIFE · fluidifica il video finale',this.config.rife,'enabled',{type:'checkbox',change:()=>this.render()});
+  const rate={value:this.config.rife.enabled?String(this.config.rife.fps):'original'};
+  this.field(s,'Fotogrammi al secondo finali',rate,'value',{options:[['original','Originali · 24 fps — senza RIFE'],['48','48 fps · RIFE'],['60','60 fps · RIFE']],change:()=>{
+   this.config.rife.enabled=rate.value!=='original';if(this.config.rife.enabled)this.config.rife.fps=Number(rate.value);this.save();this.renderKeepDetails();
+  }});
   if(this.config.rife.enabled){
-   this.field(s,'Fotogrammi al secondo finali',this.config.rife,'fps',{options:[[48,'48 fps · doppio dei fotogrammi'],[60,'60 fps']]});
    s.append(el('p','Ordine: latent e raffinamento → RIFE → Ultimate. Con Solo latent si ferma dopo RIFE; con Solo Ultimate interpola prima dei tasselli. La durata e l’audio restano invariati. Il video interpolato viene salvato anche separatamente. Richiede ComfyUI-VFI e il modello RIFE installato.'));
-   if(!this.catalog.nodes.includes('RIFEInterpolation'))s.append(el('p','RIFE non disponibile: installa ComfyUI-VFI dal Manager oppure disattiva RIFE.'));
+   if(!this.catalog.nodes.includes('RIFEInterpolation'))s.append(el('p','RIFE non disponibile: installa ComfyUI-VFI dal Manager oppure scegli Originali nella tendina dei fotogrammi al secondo.'));
   }
-  const d=el('details','','dg-card');d.append(el('summary','Controlli finalizzazione'));body.append(d);this.sampleFields(d,f);
+  const d=el('details','','dg-card');d.append(el('summary','Controlli finalizzazione'));body.append(d);this.presetMenu(d,'finish',task);this.sampleFields(d,f);
   this.field(d,'Modello latent upscale',f,'upscaler',{options:this.catalog.upscalers});this.field(d,'Sigma del raffinamento · vuoto usa scheduler',f,'sigmas');this.field(d,'Denoise raffinamento · solo senza sigma manuali',f,'denoise',{type:'number',step:.01,min:0,max:1});
   this.field(d,'Checkpoint FL2V per Ultimate',f,'ultimate_model',{options:this.catalog.models});this.field(d,'Turbo FL2V per Ultimate',f,'ultimate_turbo',{options:['',...this.catalog.loras]});this.field(d,'Potenza Turbo Ultimate',f,'ultimate_strength',{type:'number',step:.01});
   for(const [k,label,step]of[['tile_width','Larghezza tasselli',32],['tile_height','Altezza tasselli',32],['tile_padding','Contesto tasselli',8],['mask_blur','Sfumatura tasselli',1],['ultimate_steps','Step Ultimate',1],['ultimate_denoise','Denoise Ultimate',.01]])this.field(d,label,f,k,{type:'number',step});

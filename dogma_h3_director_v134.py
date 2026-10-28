@@ -435,7 +435,7 @@ class DOGMAH3DirectorEngineV2:
                     images=torch.cat([F.interpolate(chunk.movedim(-1,1),size=(target_h,target_w),mode='bicubic',align_corners=False).movedim(1,-1).clamp(0,1) for chunk in images.split(8)])
                 intermediate=folder/(job+'_H3_LATENT.mp4' if stages!='ultimate' else job+'_H3_SCELTO.mp4')
                 save_video(images,audio,intermediate,candidate)
-                st.setdefault('finals',[]).append({'label':'Latent' if stages!='ultimate' else 'Provino scelto','candidate':candidate['id'],'video':view_file(intermediate),'saved_path':export_file(intermediate,c),'id':uuid.uuid4().hex,'fps':24,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
+                st.setdefault('finals',[]).append({'label':'Intermedio · Latent' if stages!='ultimate' else 'Intermedio · Provino scelto','candidate':candidate['id'],'video':view_file(intermediate),'saved_path':export_file(intermediate,c),'id':uuid.uuid4().hex,'fps':24,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
                 update('running','Passaggio a 24 fps salvato')
                 fps=24
                 if c['rife']['enabled']:
@@ -445,7 +445,7 @@ class DOGMAH3DirectorEngineV2:
                         scale=float(r['scale']),model_name=r['model'],batch_size=int(r['batch_size']),use_fp16=bool(r['fp16']))[0]
                     out=folder/(job+f'_H3_RIFE_{fps}fps.mp4')
                     save_video(images,audio,out,candidate,fps=fps)
-                    st['finals'].append({'label':f'RIFE · {fps} fps','candidate':candidate['id'],'video':view_file(out),
+                    st['finals'].append({'label':f'Intermedio · RIFE · {fps} fps','candidate':candidate['id'],'video':view_file(out),
                         'saved_path':export_file(out,c),'id':uuid.uuid4().hex,'fps':fps,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
                 if stages in ('both','ultimate'):
                     import torch.nn.functional as F
@@ -457,7 +457,9 @@ class DOGMAH3DirectorEngineV2:
                     # Original Ultimate H3 workflow appends a temporal context tail, then trims it.
                     count=len(images); padded_n=frames((count+17)/24)
                     padded=torch.cat([images,images[-1:].repeat(padded_n-count,1,1,1)])
-                    # Ultimate uses FL2V conditioning on the selected decoded video, including for Ref2V/T2V trials.
+                    # Ultimate encodes its own local video tiles. Full-frame keyframe
+                    # tokens cannot be passed to a tile-sized latent (H3 shape mismatch).
+                    # Match the original Ultimate graph: FL2V text conditioning only.
                     import nodes
                     ultimate_res=dict(res)
                     if fin['ultimate_model']!=frozen['models'][frozen['task']]:
@@ -467,7 +469,7 @@ class DOGMAH3DirectorEngineV2:
                     ultimate_config['finish']['turbo_strength']=fin['ultimate_strength']
                     model=prepare_model(ultimate_res,ultimate_config,candidate,'finish',unique_id)
                     from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
-                    cond=MiniMaxH3ImageToVideo.execute(res['clip'],res['vae'],candidate['prompt'],w,h,padded_n,images[:1],images[-1:])[0]
+                    cond=MiniMaxH3ImageToVideo.execute(res['clip'],res['vae'],candidate['prompt'],w,h,padded_n,None,None)[0]
                     guider=Guider_Basic(model); guider.set_conds(cond)
                     sigmas=BasicScheduler.execute(model,fin['scheduler'],int(fin['ultimate_steps']),float(fin['ultimate_denoise']))[0]
                     images=call('UltimateSDUpscaleNoUpscaleGuider',unique_id,upscaled_image=padded,guider=guider,sampler=sampler_for(fin),sigmas=sigmas,
@@ -477,6 +479,8 @@ class DOGMAH3DirectorEngineV2:
                     out=folder/(job+f'_H3_ULTIMATE_{fps}fps.mp4')
                     save_video(images,audio,out,candidate,fps=fps)
                     st['finals'].append({'label':f'Ultimate · {fps} fps','candidate':candidate['id'],'video':view_file(out),'saved_path':export_file(out,c),'id':uuid.uuid4().hex,'fps':fps,'frames':len(images),'width':images.shape[2],'height':images.shape[1]})
+                st['finals'][-1]['label']='Finale · '+st['finals'][-1]['label'].removeprefix('Intermedio · ')
+                st['finals'][-1]['complete']=True
                 update('done','Finalizzazione completata. I passaggi sono salvati.',active=None)
             return {'ui':{'dogma_v2':[st]},'result':(st['message'],)}
         except Exception as exc:
