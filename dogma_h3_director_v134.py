@@ -7,12 +7,18 @@ import copy
 import json
 import re
 import uuid
+import os
+import time
+import threading
+import shutil
+
+_STATE_LOCK=threading.RLock()
 from pathlib import Path
 
 
 def defaults():
     return dict(version=2, session=str(uuid.uuid4()), action="draft", selected="", nonce=0,
-        job="DOGMA", task="i2v", exploration="seeds", count=2, seed=64,
+        generate_audio=True, output_dir="", job="DOGMA", task="i2v", exploration="seeds", count=2, seed=64,
         prompt="", variants=[{"text":"", "loras":[]}], trial_loras={},
         first="", last="", refs=[], common_loras=[], seconds=5,
         auto_aspect=True, long_edge=672, width=672, height=384, sound=True,
@@ -22,9 +28,9 @@ def defaults():
         draft={"turbo":"minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
                "turbo_strength":1., "steps":4, "sampler":"euler", "scheduler":"simple",
                "shift_video":12., "shift_audio":3., "lying":0., "lying_start":.1,"lying_end":.9},
-        finish={"stages":"both", "scale":2., "turbo":"minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        finish={"stages":"both", "resolution":"2k", "scale":2., "turbo":"minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
                 "turbo_strength":1., "sampler":"er_sde", "scheduler":"simple", "steps":8,
-                "sigmas":"0.9035, 0.8, 0.6316, 0.3158, 0", "denoise":.35,
+                "sigmas":"", "denoise":.18,
                 "shift_video":12.,"shift_audio":3.,"lying":0.,"lying_start":.1,"lying_end":.9,
                 "upscaler":"minimax_h3_latent_upscaler_3d_bf16.safetensors",
                 "ultimate_scale":1., "tile_width":768,"tile_height":512,"tile_padding":64,
@@ -46,6 +52,12 @@ def parse_config(raw):
     data=json.loads(raw) if isinstance(raw,str) else copy.deepcopy(raw)
     if not isinstance(data,dict): raise ValueError("Configurazione Director non valida.")
     c=merge(defaults(),data)
+    # Migrate the shipped high-noise refinement preset without overriding custom settings.
+    if 'resolution' not in data.get('finish',{}):
+        if c['finish']['sigmas']=='0.9035, 0.8, 0.6316, 0.3158, 0':
+            c['finish'].update(sigmas='',denoise=.18)
+    if c['finish']['resolution'] not in ('1k','2k','3k','4k'):
+        raise ValueError('Risoluzione: scegli 1K, 2K, 3K o 4K.')
     c['session']=str(uuid.UUID(c['session']))
     if c['action'] not in ('draft','finish'): raise ValueError('Azione non valida.')
     if c['task'] not in ('i2v','t2v','ref2v'): raise ValueError('Scegli I2V, T2V o Ref2Video.')
@@ -105,16 +117,44 @@ def manifest_root(session):
 
 
 def write_json(path,value):
-    import os
-    path.parent.mkdir(parents=True,exist_ok=True)
-    temp=path.with_suffix('.tmp')
-    temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
-    os.replace(temp,path)
+    # Serialize readers/writers; unique temporary names avoid competing executions.
+    with _STATE_LOCK:
+        path.parent.mkdir(parents=True,exist_ok=True)
+        temp=path.with_name(path.name+'.'+uuid.uuid4().hex+'.tmp')
+        try:
+            temp.write_text(json.dumps(value,ensure_ascii=False,indent=2),encoding='utf-8')
+            for attempt in range(8):
+                try:
+                    os.replace(temp,path)
+                    break
+                except PermissionError:
+                    if attempt==7: raise
+                    time.sleep(.025*(attempt+1))
+        finally:
+            try: temp.unlink(missing_ok=True)
+            except OSError: pass
 
 
 def state(session):
-    p=manifest_root(session)/'session.json'
-    return json.loads(p.read_text(encoding='utf-8')) if p.exists() else {'candidates':[], 'status':'new'}
+    with _STATE_LOCK:
+        p=manifest_root(session)/'session.json'
+        return json.loads(p.read_text(encoding='utf-8')) if p.exists() else {'candidates':[], 'status':'new'}
+
+
+def target_dimensions(w,h,resolution):
+    edge={'1k':1024,'2k':2048,'3k':3072,'4k':4096}[resolution]
+    return max(32,round(w/max(w,h)*edge/32)*32),max(32,round(h/max(w,h)*edge/32)*32)
+
+
+def export_file(path,c):
+    # Keep a Comfy preview copy; export to the requested folder without overwriting.
+    if not c.get('output_dir','').strip(): return str(path.resolve())
+    directory=Path(c['output_dir']).expanduser()
+    if not directory.is_absolute(): raise ValueError('La cartella output deve avere un percorso assoluto.')
+    directory.mkdir(parents=True,exist_ok=True)
+    dest=directory/(path.stem+'_'+uuid.uuid4().hex[:8]+path.suffix)
+    shutil.copy2(path,dest)
+    return str(dest.resolve())
 
 
 def call(name,uid='dogma',**kwargs):
@@ -226,7 +266,7 @@ def sampler_for(s):
     return sampler
 
 
-def sample(model,cond,latent,s,seed,manual=False):
+def sample(model,cond,latent,s,seed,manual=False,progress=None):
     import torch
     from comfy_extras.nodes_custom_sampler import BasicScheduler,Guider_Basic,Noise_RandomNoise,SamplerCustomAdvanced
     guider=Guider_Basic(model); guider.set_conds(cond)
@@ -235,13 +275,28 @@ def sample(model,cond,latent,s,seed,manual=False):
         if len(vals)<2 or vals[-1]!=0 or any(a<=b for a,b in zip(vals,vals[1:])): raise ValueError('Sigma manuali: valori decrescenti, ultimo 0.')
         sigmas=torch.tensor(vals,dtype=torch.float32)
     else: sigmas=BasicScheduler.execute(model,s['scheduler'],int(s['steps']),float(s.get('denoise',1)))[0]
-    return SamplerCustomAdvanced.execute(Noise_RandomNoise(seed),guider,sampler_for(s),sigmas,latent)[0]
+    if progress is None:
+        return SamplerCustomAdvanced.execute(Noise_RandomNoise(seed),guider,sampler_for(s),sigmas,latent)[0]
+    import comfy.sample, comfy.utils, comfy.model_management, latent_preview
+    latent=latent.copy()
+    tensor=comfy.sample.fix_empty_latent_channels(model,latent['samples'],latent.get('downscale_ratio_spacial'),latent.get('downscale_ratio_temporal'))
+    latent['samples']=tensor
+    preview=latent_preview.prepare_callback(model,len(sigmas)-1,{})
+    def callback(step,x0,x,total):
+        if preview: preview(step,x0,x,total)
+        progress(step+1,total)
+    result=guider.sample(Noise_RandomNoise(seed).generate_noise(latent),tensor,sampler_for(s),sigmas,
+        denoise_mask=latent.get('noise_mask'),callback=callback,
+        disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,seed=seed)
+    latent['samples']=result.to(comfy.model_management.intermediate_device())
+    latent.pop('downscale_ratio_spacial',None);latent.pop('downscale_ratio_temporal',None)
+    return latent
 
 
-def decode(res,latent):
+def decode(res,latent,generate_audio=True):
     import nodes
     from comfy_extras.nodes_audio import VAEDecodeAudio
-    return nodes.VAEDecode().decode(res['vae'],latent)[0],VAEDecodeAudio.execute(res['audio'],latent)[0]
+    return nodes.VAEDecode().decode(res['vae'],latent)[0],(VAEDecodeAudio.execute(res['audio'],latent)[0] if generate_audio else None)
 
 
 def save_video(images,audio,path,metadata):
@@ -288,9 +343,13 @@ class DOGMAH3DirectorEngineV2:
         st=state(c['session']); st['engine']=str(unique_id); st['session']=c['session']
         def update(status,message,**extra):
             from server import PromptServer
-            st.update(status=status,message=message,**extra)
+            st.update(status=status,message=message,action=c['action'],progress=None,**extra)
             write_json(root/'session.json',st)
             PromptServer.instance.send_sync('dogma.h3.v2',st)
+        def progress(step,total):
+            from server import PromptServer
+            st['progress']={'step':step,'total':total}
+            PromptServer.instance.send_sync('dogma.h3.v2.progress',{'session':c['session'],'engine':str(unique_id),'step':step,'total':total})
         try:
             update('running','Preparazione risorse…')
             if c['action']=='draft':
@@ -299,7 +358,7 @@ class DOGMAH3DirectorEngineV2:
                 w,h=dimensions(c,(first.shape[2],first.shape[1]) if first is not None else None)
                 n=frames(c['seconds']); res=load_resources(c)
                 run=str(uuid.uuid4()); dest=root/run; dest.mkdir()
-                update('running','Preparazione prompt…',candidates=[],finals=[],run=run,width=w,height=h,frames=n)
+                update('running','Preparazione prompt…',candidates=[],finals=[],run=run,width=w,height=h,frames=n,total_trials=len(plan))
                 # Encode once for shared prompts; different prompt cards preserve all paragraphs.
                 encoded={}
                 for i,p in enumerate(plan):
@@ -310,14 +369,15 @@ class DOGMAH3DirectorEngineV2:
                     update('running',f'Provino {i+1}/{len(plan)} · generazione',active=i+1)
                     cond,lat=encoded[p['prompt']][0],encoded[p['prompt']][1]
                     model=prepare_model(res,c,p,'draft',unique_id)
-                    result=sample(model,cond,lat,c['draft'],p['seed'])
+                    result=sample(model,cond,lat,c['draft'],p['seed'],progress=progress)
                     cid=str(uuid.uuid4()); latent_path=dest/(cid+'.pt')
                     torch.save(pack(result),latent_path)
                     update('running',f'Provino {i+1}/{len(plan)} · decodifica')
-                    images,audio=decode(res,result)
-                    movie=dest/(cid+'.mp4'); save_video(images,audio,movie,p)
+                    images,audio=decode(res,result,c['generate_audio'])
+                    job=re.sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA'
+                    movie=dest/(job+f'_H3_PROVINO_{i+1:02}_{cid[:8]}.mp4'); save_video(images,audio,movie,p)
                     candidate=dict(id=cid,label=f'Provino {i+1:02}',video=view_file(movie),
-                        latent=f'{run}/{cid}.pt',width=w,height=h,frames=n,config=copy.deepcopy(c),**p)
+                        saved_path=export_file(movie,c),latent=f'{run}/{cid}.pt',width=w,height=h,frames=n,config=copy.deepcopy(c),**p)
                     st['candidates'].append(candidate)
                     update('running',f'Provino {i+1}/{len(plan)} pronto')
                     del result,images,audio,model
@@ -332,33 +392,41 @@ class DOGMAH3DirectorEngineV2:
                 if not path.is_relative_to(root.resolve()): raise ValueError('Percorso latenti non valido.')
                 latent=unpack(torch.load(path,map_location='cpu',weights_only=True))
                 fin=c['finish']; stages=fin['stages']; w,h=candidate['width'],candidate['height']; n=candidate['frames']
+                target_w,target_h=target_dimensions(w,h,fin['resolution'])
                 folder=root/'finals'/str(uuid.uuid4()); folder.mkdir(parents=True)
                 job=re.sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA'
                 if stages in ('both','latent'):
                     from comfy.nested_tensor import NestedTensor
                     update('running','Finalizzazione · upscale dei latenti')
                     video,audio_lat=latent['samples'].unbind()
+                    latent_w,latent_h=(target_w,target_h) if stages=='latent' else target_dimensions(w,h,fin['resolution'])
+                    if stages=='both' and max(latent_w,latent_h)>max(w,h)*2:
+                        latent_w,latent_h=round(w*2/32)*32,round(h*2/32)*32
+                    latent_w,latent_h=max(w,latent_w),max(h,latent_h)
                     up=call('MinimaxH3LatentUpscaler3D',latent={'samples':video},model_name=fin['upscaler'],
-                        mode={'mode':'scale by multiplier','scale':float(fin['scale'])},align=32,keep_proportion=True,
+                        mode={'mode':'target dimensions','width':latent_w,'height':latent_h},align=32,keep_proportion=False,
                         device='cuda',precision='fp16',offload_after_upscale=True)[0]
                     latent={'samples':NestedTensor([up['samples'],audio_lat])}
                     h,w=up['samples'].shape[-2]*16,up['samples'].shape[-1]*16
                     cond=condition(frozen,a,res,candidate['prompt'],w,h,n)[0]
                     model=prepare_model(res,frozen,candidate,'finish',unique_id)
                     update('running','Finalizzazione · raffinamento dei latenti')
-                    latent=sample(model,cond,latent,fin,candidate['seed'],True)
+                    latent=sample(model,cond,latent,fin,candidate['seed'],True,progress=progress)
                     torch.save(pack(latent),folder/'latent_refined.pt')
                 update('running','Finalizzazione · decodifica')
-                images,audio=decode(res,latent)
+                images,audio=decode(res,latent,c['generate_audio'])
+                if stages=='latent' and tuple(images.shape[1:3])!=(target_h,target_w):
+                    import torch.nn.functional as F
+                    images=torch.cat([F.interpolate(chunk.movedim(-1,1),size=(target_h,target_w),mode='bicubic',align_corners=False).movedim(1,-1).clamp(0,1) for chunk in images.split(8)])
                 intermediate=folder/(job+'_H3_LATENT.mp4' if stages!='ultimate' else job+'_H3_SCELTO.mp4')
                 save_video(images,audio,intermediate,candidate)
-                st.setdefault('finals',[]).append({'label':'Latent' if stages!='ultimate' else 'Provino scelto','candidate':candidate['id'],'video':view_file(intermediate)})
+                st.setdefault('finals',[]).append({'label':'Latent' if stages!='ultimate' else 'Provino scelto','candidate':candidate['id'],'video':view_file(intermediate),'saved_path':export_file(intermediate,c),'id':uuid.uuid4().hex})
                 update('running' if stages!='latent' else 'done','Passaggio salvato')
                 if stages in ('both','ultimate'):
                     import torch.nn.functional as F
                     from comfy_extras.nodes_custom_sampler import Guider_Basic,BasicScheduler
                     update('running','Finalizzazione · Ultimate a tasselli')
-                    scale=float(fin['ultimate_scale']); h=round(images.shape[1]*scale/32)*32; w=round(images.shape[2]*scale/32)*32
+                    w,h=target_w,target_h
                     if (h,w)!=tuple(images.shape[1:3]):
                         images=torch.cat([F.interpolate(chunk.movedim(-1,1),size=(h,w),mode='bicubic',align_corners=False).movedim(1,-1).clamp(0,1) for chunk in images.split(8)])
                     # Original Ultimate H3 workflow appends a temporal context tail, then trims it.
@@ -377,16 +445,17 @@ class DOGMAH3DirectorEngineV2:
                     cond=MiniMaxH3ImageToVideo.execute(res['clip'],res['vae'],candidate['prompt'],w,h,padded_n,images[:1],images[-1:])[0]
                     guider=Guider_Basic(model); guider.set_conds(cond)
                     sigmas=BasicScheduler.execute(model,fin['scheduler'],int(fin['ultimate_steps']),float(fin['ultimate_denoise']))[0]
-                    images=call('UltimateSDUpscaleNoUpscaleGuider',upscaled_image=padded,guider=guider,sampler=sampler_for(fin),sigmas=sigmas,
+                    images=call('UltimateSDUpscaleNoUpscaleGuider',unique_id,upscaled_image=padded,guider=guider,sampler=sampler_for(fin),sigmas=sigmas,
                         vae=res['vae'],seed=candidate['seed'],mode_type='Chess',tile_width=int(fin['tile_width']),tile_height=int(fin['tile_height']),
                         mask_blur=int(fin['mask_blur']),tile_padding=int(fin['tile_padding']),seam_fix_mode='None',seam_fix_denoise=.15,
                         seam_fix_mask_blur=8,seam_fix_width=64,seam_fix_padding=16,tile_overlap_mode='Reprocess Overlap',tiled_decode=True,batch_size=1,anchor_context=False)[0][:count]
                     out=folder/(job+'_H3_ULTIMATE.mp4'); save_video(images,audio,out,candidate)
-                    st['finals'].append({'label':'Ultimate','candidate':candidate['id'],'video':view_file(out)})
+                    st['finals'].append({'label':'Ultimate','candidate':candidate['id'],'video':view_file(out),'saved_path':export_file(out,c),'id':uuid.uuid4().hex})
                 update('done','Finalizzazione completata. I passaggi sono salvati.',active=None)
             return {'ui':{'dogma_v2':[st]},'result':(st['message'],)}
         except Exception as exc:
-            update('error',str(exc),active=None)
+            try: update('error',str(exc),active=None)
+            except Exception: pass  # Preserve the actual inference or storage error.
             raise
 
 
@@ -409,6 +478,41 @@ def register_routes():
     from aiohttp import web
     import folder_paths, comfy.samplers, nodes
     routes=PromptServer.instance.routes
+    def local_request(request):
+        from urllib.parse import urlparse
+        if request.remote not in ('127.0.0.1','::1'):
+            raise web.HTTPForbidden(text='Disponibile solo sul computer Comfy.')
+        origin=request.headers.get('Origin')
+        if origin and urlparse(origin).netloc!=request.host:
+            raise web.HTTPForbidden(text='Origine non valida.')
+
+    @routes.post('/dogma/h3/v2/open-folder')
+    async def open_folder(request):
+        local_request(request)
+        data=await request.json(); st=state(data['session'])
+        item=next((x for x in st.get('finals',[])+st.get('candidates',[]) if x.get('id')==data.get('id')),None)
+        if not item or not item.get('saved_path'): raise web.HTTPNotFound(text='Risultato non disponibile.')
+        directory=Path(item['saved_path']).parent
+        if not directory.is_dir(): raise web.HTTPNotFound(text='Cartella non disponibile.')
+        if os.name!='nt': raise web.HTTPBadRequest(text='Apri cartella richiede Windows.')
+        os.startfile(str(directory))
+        return web.json_response({'ok':True})
+
+    @routes.post('/dogma/h3/v2/choose-folder')
+    async def choose_folder(request):
+        local_request(request)
+        import asyncio,subprocess
+        if os.name!='nt': raise web.HTTPBadRequest(text='Inserisci il percorso della cartella.')
+        script="""[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+Add-Type -AssemblyName System.Windows.Forms
+$picker = New-Object System.Windows.Forms.FolderBrowserDialog
+$picker.Description = 'DOGMA - Cartella output'
+if ($picker.ShowDialog() -eq 'OK') { [Console]::Write($picker.SelectedPath) }
+"""
+        result=await asyncio.to_thread(subprocess.run,['powershell','-NoProfile','-STA','-Command',script],capture_output=True,text=True,encoding='utf-8',timeout=120,creationflags=subprocess.CREATE_NO_WINDOW)
+        if result.returncode: raise web.HTTPBadRequest(text='Selettore non disponibile. Inserisci il percorso.')
+        return web.json_response({'path':result.stdout.strip()})
+
     @routes.get('/dogma/h3/v2/catalog')
     async def catalog(request):
         def files(k):

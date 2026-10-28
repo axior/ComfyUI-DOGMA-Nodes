@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.35',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -16,8 +16,13 @@ export class DirectorStudio {
   this.node=node;this.page='prepare';this.data={candidates:[],finals:[]};this.pending=false;this.promptId=null;this.lastNotice='';this.abort=new AbortController();
   const on=(name,fn)=>api.addEventListener(name,fn,{signal:this.abort.signal});
   on('dogma.h3.v2',e=>{if(e.detail.session===this.config?.session)this.applyState(e.detail);});
+  on('dogma.h3.v2.progress',e=>{if(e.detail.session===this.config?.session){this.data.progress=e.detail;this.status();}});
+  on('progress',e=>{if(this.pending&&(!e.detail.prompt_id||e.detail.prompt_id===this.promptId)){
+   this.data.progress={step:e.detail.value,total:e.detail.max};this.status();
+  }});
   on('kj_preview_override',e=>{
    const d=e.detail;if(String(d.node_id)!==String(this.data.engine))return;
+   if(d.step!=null){this.data.progress={step:d.step,total:d.total_steps??d.total};this.status();}
    if(d.image){this.previewData=`data:${d.mime||'image/jpeg'};base64,${d.image}`;this.previewVideo=d.mime==='video/mp4';this.updateLive();}
    const label=this.dialog?.querySelector('.dg-live-label');if(label)label.textContent=`Anteprima durante il calcolo · step ${d.step??'?'} / ${d.total_steps??d.total??'?'}`;
   });
@@ -27,20 +32,34 @@ export class DirectorStudio {
   on('executing',e=>{if(e.detail?.prompt_id===this.promptId&&e.detail?.node===null){this.pending=false;this.recover();}});
  }
  get widget(){return this.node.widgets.find(w=>w.name==='config');}
- load(){try{this.config=JSON.parse(this.widget.value);}catch{this.config=clone(this.catalog.defaults);}this.config.session ||= crypto.randomUUID();}
+ load(){
+  const merge=(a,b)=>{for(const[k,v]of Object.entries(b||{}))a[k]=v&&typeof v==='object'&&!Array.isArray(v)?merge(a[k]||{},v):v;return a;};
+  let stored;try{stored=JSON.parse(this.widget.value);}catch{stored={};}
+  this.config=merge(clone(this.catalog.defaults),stored);
+  if(!stored.finish?.resolution&&stored.finish?.sigmas==='0.9035, 0.8, 0.6316, 0.3158, 0'){this.config.finish.sigmas='';this.config.finish.denoise=.18;}
+  this.config.session ||= crypto.randomUUID();
+ }
  save(){this.widget.value=JSON.stringify(this.config);this.node.setDirtyCanvas?.(true,true);app.graph?.change?.();}
- async request(path,opts){const r=await api.fetchApi(path,opts);if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);return r.json();}
+ async request(path,opts={}){
+  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),path.endsWith('choose-folder')?125000:12000);
+  try{const r=await api.fetchApi(path,{...opts,signal:controller.signal});if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);return await r.json();}
+  finally{clearTimeout(timeout);}
+ }
  async open(){
   if(active&&active!==this)active.close();active=this;
   if(this.dialog?.open)return;
   this.catalog=await this.request('/dogma/h3/v2/catalog');this.load();
   this.dialog=el('dialog','','dg-studio');this.dialog.setAttribute('aria-label','DOGMA H3 Director');
   this.dialog.addEventListener('cancel',e=>{e.preventDefault();this.close();});
-  this.dialog.addEventListener('keydown',e=>e.stopPropagation());
+  this.dialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();this.close();}e.stopPropagation();});
   document.body.append(this.dialog);this.render();this.dialog.showModal();
-  await this.recover();this.poll=setInterval(()=>this.recover(false),3500);
+  await this.recover();if(this.dialog)this.poll=setInterval(()=>this.recover(false),3500);
  }
- close(){clearInterval(this.poll);this.save();this.dialog?.close();this.dialog?.remove();this.dialog=null;if(active===this)active=null;}
+ close(){
+  clearInterval(this.poll);const dialog=this.dialog;this.dialog=null;if(active===this)active=null;
+  try{dialog?.querySelectorAll('video').forEach(v=>v.pause());dialog?.close();}finally{dialog?.remove();}
+  try{this.save();}catch(e){console.warn('DOGMA: pannello chiuso; salvataggio non riuscito',e);}
+ }
  destroy(){clearInterval(this.poll);this.abort.abort();this.dialog?.remove();if(active===this)active=null;}
  sound(){
   if(!this.config.sound)return;
@@ -56,7 +75,7 @@ export class DirectorStudio {
   if(change&&this.page!=='prepare')this.render();else this.status();
  }
  async recover(render=true){
-  if(!this.config)return;
+  if(!this.config||this.recovering)return;this.recovering=true;
   try{
    const d=await this.request('/dogma/h3/v2/session/'+this.config.session);
    const q=await this.request('/queue');
@@ -64,15 +83,19 @@ export class DirectorStudio {
    const owned=jobs.find(x=>this.promptId?x[1]===this.promptId:JSON.stringify(x[2]||{}).includes(this.config.session));
    if(owned){this.promptId=owned[1];this.pending=true;if(d.status!=='running'){d.status='running';d.message='In coda · attendo il motore';}}
    else if(d.status==='running'){
-    d.status='idle';d.message='Comfy è fermo. Puoi usare i provini già salvati o avviare un nuovo giro.';this.pending=false;
+    d.status='idle';d.message=jobs.length?'DOGMA non è in esecuzione. Comfy sta elaborando un altro lavoro.':'Il lavoro DOGMA non è più in coda. I provini salvati restano disponibili; controlla eventuali errori in Comfy.';this.pending=false;
    }else if(!owned)this.pending=false;
+   if(owned&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
    if(render||JSON.stringify(d)!==JSON.stringify(this.data))this.applyState(d);else this.status();
-  }catch(e){if(render)this.fail('Connessione a Comfy non disponibile: '+e.message);}
+  }catch(e){this.data.message='Stato non disponibile: '+e.message+'. Puoi sempre tornare a Comfy.';this.status();}
+  finally{this.recovering=false;}
  }
  fail(message){this.pending=false;this.data.status='error';this.data.message=message;this.status();this.sound();}
  status(){
   const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||'Prepara il lavoro, genera i provini e scegli quale continuare.';s.dataset.state=this.data.status;}
   this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending);
+  const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
+  const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
   const stop=this.dialog?.querySelector('[data-stop]');if(stop)stop.disabled=!this.pending;
  }
  async queue(action){
@@ -96,7 +119,7 @@ export class DirectorStudio {
    const q=await this.request('/queue');if(q.queue_running?.length||q.queue_pending?.length)throw new Error('Comfy sta già lavorando. Attendi la fine della coda.');
    this.config.action=action;this.config.nonce++;this.save();
    this.previewData=null;this.previewVideo=false;
-   this.pending=true;this.data.message='Invio a Comfy…';this.status();
+   this.pending=true;this.data.status='running';this.data.progress=null;this.data.message='Invio a Comfy…';this.status();
    const graph=await app.graphToPrompt();
    // Direct API returns a prompt_id; app.queuePrompt() may return false for accepted queued work.
    const result=await api.queuePrompt(0,graph);
@@ -108,7 +131,8 @@ export class DirectorStudio {
   const q=await this.request('/queue');
   if(q.queue_running?.some(x=>x[1]===this.promptId))await api.interrupt();
   else if(q.queue_pending?.some(x=>x[1]===this.promptId))await this.request('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete:[this.promptId]})});
-  this.pending=false;await this.recover();
+  else {this.data.message='Nessun lavoro DOGMA da interrompere. Le altre generazioni non vengono fermate.';this.pending=false;this.status();return;}
+  this.data.message='Interruzione richiesta · attendo Comfy';this.status();
  }
  field(parent,label,obj,key,opts={}){
   const wrap=el('label','','dg-field');wrap.append(el('span',label));let x;
@@ -142,10 +166,10 @@ export class DirectorStudio {
   const header=el('header','','dg-header');const logo=el('img');logo.src=new URL('dogma_logo_white.png',ROOT);logo.alt='DOGMA';header.append(logo,el('div','ORIGINALS / H3 DIRECTOR','dg-brand'),button('Torna a Comfy',()=>this.close()));this.dialog.append(header);
   const nav=el('nav');for(const [key,label]of[['prepare','01 Prepara'],['choose','02 Scegli'],['finish','03 Finalizza']])nav.append(button(label,()=>{this.page=key;this.render();},this.page===key?'is-active':''));
   const fresh=button('Nuova sessione',()=>{if(this.pending)return;if(!window.confirm('Avviare una nuova sessione? I video precedenti restano salvati. Salva il workflow in Comfy per poter riaprire anche la galleria precedente.'))return;this.config.session=crypto.randomUUID();this.config.selected='';this.config.action='draft';this.data={candidates:[],finals:[],status:'new'};this.promptId=null;this.A=this.B=null;this.previewData=null;this.page='prepare';this.save();this.render();});fresh.dataset.queue='';nav.append(fresh);
-  const stop=button('Interrompi',()=>this.stop().catch(e=>this.fail(e.message)));stop.dataset.stop='';nav.append(stop);this.dialog.append(nav,el('div','','dg-status'));
+  const stop=button('Interrompi',()=>this.stop().catch(e=>{this.data.message='Interruzione non confermata: '+e.message;this.status();}));stop.dataset.stop='';nav.append(stop);const state=el('div','','dg-state');state.append(el('div','','dg-status'),el('progress','','dg-progress'),el('small','','dg-progress-label'));this.dialog.append(nav,state);
   const body=el('main');this.dialog.append(body);
   if(this.page==='prepare')this.prepare(body);if(this.page==='choose')this.choose(body);if(this.page==='finish')this.finish(body);
-  const foot=el('footer','Salvataggio automatico della sessione · I risultati restano in Comfy/output/DOGMA_H3_DIRECTOR · Esc torna a Comfy');this.dialog.append(foot);this.status();
+  const foot=el('footer','Salvataggio automatico della sessione · Cartella output configurabile in Prepara · Esc torna a Comfy');this.dialog.append(foot);this.status();
  }
  prepare(body){
   const c=this.config;const intro=this.section(body,'Il tuo lavoro');const row=el('div','','dg-grid');intro.append(row);
@@ -153,6 +177,9 @@ export class DirectorStudio {
    // Turbo task adapters cannot be silently reused across different H3 checkpoints.
    c.draft.turbo='';c.finish.turbo='';c.draft.steps=24;c.finish.steps=24;c.finish.sigmas='';this.save();this.render();
   }});
+  this.field(intro,'Cartella output · vuoto = cartella Comfy',c,'output_dir',{hint:'Percorso assoluto sul computer dove gira Comfy. I video vengono copiati qui e restano visibili nella galleria.'});
+  intro.append(button('Scegli cartella…',async()=>{try{const r=await this.request('/dogma/h3/v2/choose-folder',{method:'POST'});if(r.path){c.output_dir=r.path;this.save();this.render();}}catch(e){this.fail(e.message);}}));
+  this.field(intro,'Genera audio nei video',c,'generate_audio',{type:'checkbox',hint:'Disattivato: provini e finali vengono esportati senza traccia audio. H3 mantiene internamente i latenti audiovisivi.'});
   const assets=el('div','','dg-grid');body.append(assets);
   if(c.task==='i2v'){this.asset(assets,'Primo fotogramma · facoltativo',c,'first');this.asset(assets,'Ultimo fotogramma · facoltativo',c,'last');}
   if(c.task==='ref2v'){
@@ -228,14 +255,20 @@ export class DirectorStudio {
   const selected=this.section(body,p.label+' · selezionato');selected.append(film(p.video),el('p','Prompt, seed, sorgenti, modello e LoRA sono ripresi automaticamente da questo provino.'));
   const f=this.config.finish;const s=this.section(body,'Come vuoi finalizzare?');
   this.field(s,'Passaggi',f,'stages',{options:[['both','Completo · latent upscale + Ultimate'],['latent','Solo latent upscale e raffinamento'],['ultimate','Solo Ultimate dal provino']],change:()=>this.render()});
-  if(f.stages!=='ultimate')this.field(s,'Ingrandimento latenti',f,'scale',{type:'number',step:.5,min:1,max:4});
-  if(f.stages!=='latent')this.field(s,'Ulteriore ingrandimento prima di Ultimate',f,'ultimate_scale',{type:'number',step:.5,min:1,max:4,hint:'1 = Ultimate rifinisce la risoluzione del passaggio precedente. 2 = raddoppia prima di rifinire.'});
+  this.field(s,'Risoluzione finale · lato lungo',f,'resolution',{options:[['1k','1K · 1024 px'],['2k','2K · 2048 px'],['3k','3K · 3072 px'],['4k','4K · 4096 px']],change:()=>this.render()});
+  const edge={ '1k':1024,'2k':2048,'3k':3072,'4k':4096 }[f.resolution];
+  s.append(el('p',`Uscita: ${Math.max(32,Math.round(p.width/Math.max(p.width,p.height)*edge/32)*32)} × ${Math.max(32,Math.round(p.height/Math.max(p.width,p.height)*edge/32)*32)} px. Proporzioni del provino, allineate a 32 px. Completo usa un passaggio latente fino a ×2 e Ultimate alla risoluzione scelta.`));
+  s.append(el('small','Il raffinamento può modificare i dettagli. 3K/4K richiedono più memoria e tempo; il solo passaggio latente può superare la memoria disponibile.'));
   const d=el('details','','dg-card');d.append(el('summary','Controlli finalizzazione'));body.append(d);this.sampleFields(d,f);
   this.field(d,'Modello latent upscale',f,'upscaler',{options:this.catalog.upscalers});this.field(d,'Sigma del raffinamento · vuoto usa scheduler',f,'sigmas');this.field(d,'Denoise raffinamento · solo senza sigma manuali',f,'denoise',{type:'number',step:.01,min:0,max:1});
   this.field(d,'Checkpoint FL2V per Ultimate',f,'ultimate_model',{options:this.catalog.models});this.field(d,'Turbo FL2V per Ultimate',f,'ultimate_turbo',{options:['',...this.catalog.loras]});this.field(d,'Potenza Turbo Ultimate',f,'ultimate_strength',{type:'number',step:.01});
   for(const [k,label,step]of[['tile_width','Larghezza tasselli',32],['tile_height','Altezza tasselli',32],['tile_padding','Contesto tasselli',8],['mask_blur','Sfumatura tasselli',1],['ultimate_steps','Step Ultimate',1],['ultimate_denoise','Denoise Ultimate',.01]])this.field(d,label,f,k,{type:'number',step});
   const go=button('Finalizza questo',()=>this.queue('finish'),'dg-primary');go.dataset.queue='';body.append(go,button('Torna ai provini',()=>{this.page='choose';this.render();}));this.live(body);
-  const out=el('div','','dg-gallery');body.append(out);for(const item of (this.data.finals||[]).filter(x=>!x.candidate||x.candidate===p.id)){const card=this.section(out,item.label);card.append(film(item.video));const a=el('a','Apri / scarica video');a.href=viewURL(item.video);a.target='_blank';a.rel='noopener';card.append(a);}
+  const out=el('div','','dg-gallery');body.append(out);
+  for(const item of (this.data.finals||[]).filter(x=>!x.candidate||x.candidate===p.id)){
+   const card=this.section(out,item.label);card.append(film(item.video),el('p',item.saved_path||'Risultato precedente · cartella Comfy','dg-saved-path'));
+   if(item.saved_path)card.append(button('Apri cartella',async()=>{try{await this.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,id:item.id})});}catch(e){this.fail(e.message);}}));
+  }
  }
 }
 
