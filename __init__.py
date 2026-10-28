@@ -182,3 +182,15 @@ try:
     del _H3_133, _H3_133_NAMES
 except Exception as _h3_133_error:
     print("[DOGMA H3 Director] H3 support unavailable; existing nodes preserved:", _h3_133_error)
+
+
+# H3 Director V2: additive registration; preserve all earlier workflows.
+try:
+    from .dogma_h3_director_v134 import NODE_CLASS_MAPPINGS as _H3_134, NODE_DISPLAY_NAME_MAPPINGS as _H3_134_NAMES
+    if set(_H3_134).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA H3 Director V2: node ID collision")
+    NODE_CLASS_MAPPINGS.update(_H3_134)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_H3_134_NAMES)
+    del _H3_134, _H3_134_NAMES
+except Exception as _h3_134_error:
+    print("[DOGMA H3 Director V2] Unavailable; existing nodes preserved:", _h3_134_error)
