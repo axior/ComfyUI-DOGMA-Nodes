@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.35',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.36',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -13,7 +13,7 @@ let active=null;
 
 export class DirectorStudio {
  constructor(node){
-  this.node=node;this.page='prepare';this.data={candidates:[],finals:[]};this.pending=false;this.promptId=null;this.lastNotice='';this.abort=new AbortController();
+  this.epoch=0;this.requests=new Set();this.node=node;this.page='prepare';this.data={candidates:[],finals:[]};this.pending=false;this.promptId=null;this.lastNotice='';this.abort=new AbortController();
   const on=(name,fn)=>api.addEventListener(name,fn,{signal:this.abort.signal});
   on('dogma.h3.v2',e=>{if(e.detail.session===this.config?.session)this.applyState(e.detail);});
   on('dogma.h3.v2.progress',e=>{if(e.detail.session===this.config?.session){this.data.progress=e.detail;this.status();}});
@@ -39,28 +39,85 @@ export class DirectorStudio {
   if(!stored.finish?.resolution&&stored.finish?.sigmas==='0.9035, 0.8, 0.6316, 0.3158, 0'){this.config.finish.sigmas='';this.config.finish.denoise=.18;}
   this.config.session ||= crypto.randomUUID();
  }
- save(){this.widget.value=JSON.stringify(this.config);this.node.setDirtyCanvas?.(true,true);app.graph?.change?.();}
+ save(){
+  if(!this.config)return;
+  this.widget.value=JSON.stringify(this.config);this.node.setDirtyCanvas?.(true,true);
+  clearTimeout(this.saveTimer);this.saveTimer=setTimeout(()=>{try{app.graph?.change?.();}catch(e){console.warn('DOGMA: aggiornamento workflow',e);}},250);
+ }
  async request(path,opts={}){
-  const controller=new AbortController();const timeout=setTimeout(()=>controller.abort(),path.endsWith('choose-folder')?125000:12000);
-  try{const r=await api.fetchApi(path,{...opts,signal:controller.signal});if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);return await r.json();}
-  finally{clearTimeout(timeout);}
+  const controller=new AbortController(),epoch=this.epoch;this.requests.add(controller);let expired=false;
+  const timeout=setTimeout(()=>{expired=true;controller.abort();},20000);
+  try{
+   const r=await api.fetchApi(path,{...opts,signal:controller.signal});
+   if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);
+   const result=await r.json();
+   if(epoch!==this.epoch){const e=new Error('Pannello chiuso');e.name='AbortError';throw e;}
+   return result;
+  }catch(e){
+   if(expired)throw new Error('Il server non risponde entro 20 secondi. Puoi chiudere il pannello e riprovare.');
+   throw e;
+  }finally{clearTimeout(timeout);this.requests.delete(controller);}
+ }
+ header(){
+  const h=el('header','','dg-header'),logo=el('img');logo.src=new URL('dogma_logo_white.png',ROOT);logo.alt='DOGMA';
+  h.append(logo,el('div','ORIGINALS / H3 DIRECTOR','dg-brand'),button('Torna a Comfy',()=>this.close()));return h;
  }
  async open(){
-  if(active&&active!==this)active.close();active=this;
+  if(active&&active!==this)active.close();
   if(this.dialog?.open)return;
-  this.catalog=await this.request('/dogma/h3/v2/catalog');this.load();
-  this.dialog=el('dialog','','dg-studio');this.dialog.setAttribute('aria-label','DOGMA H3 Director');
-  this.dialog.addEventListener('cancel',e=>{e.preventDefault();this.close();});
-  this.dialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();this.close();}e.stopPropagation();});
-  document.body.append(this.dialog);this.render();this.dialog.showModal();
-  await this.recover();if(this.dialog)this.poll=setInterval(()=>this.recover(false),3500);
+  active=this;const epoch=++this.epoch;this.loading=true;
+  const dialog=this.dialog=el('dialog','','dg-studio');dialog.setAttribute('aria-label','DOGMA H3 Director');
+  dialog.addEventListener('cancel',e=>{e.preventDefault();this.close();});
+  // Keep Comfy shortcuts away from text fields; never synthesize keyboard events.
+  for(const name of ['keydown','keyup'])dialog.addEventListener(name,e=>e.stopPropagation());
+  dialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();this.close();}});
+  dialog.append(this.header(),el('nav'),el('div','Caricamento impostazioni…','dg-status'),el('main'),el('footer'));
+  document.body.append(dialog);dialog.showModal();
+  try{
+   this.catalog=await this.request('/dogma/h3/v2/catalog');if(epoch!==this.epoch)return;
+   this.load();this.loading=false;this.render();
+   await this.recover();if(epoch===this.epoch&&this.dialog)this.poll=setInterval(()=>this.recover(false),3500);
+  }catch(e){
+   if(epoch!==this.epoch||e.name==='AbortError')return;
+   dialog.querySelector('.dg-status').textContent=e.message;
+   dialog.querySelector('main').append(button('Riprova',()=>{this.close();this.open();}));
+  }
  }
  close(){
-  clearInterval(this.poll);const dialog=this.dialog;this.dialog=null;if(active===this)active=null;
+  ++this.epoch;clearInterval(this.poll);this.recovering=false;
+  for(const c of this.requests)c.abort();this.requests.clear();
+  const dialog=this.dialog;this.dialog=null;this.folderPanel=null;if(active===this)active=null;
   try{dialog?.querySelectorAll('video').forEach(v=>v.pause());dialog?.close();}finally{dialog?.remove();}
-  try{this.save();}catch(e){console.warn('DOGMA: pannello chiuso; salvataggio non riuscito',e);}
+  this.save();
  }
- destroy(){clearInterval(this.poll);this.abort.abort();this.dialog?.remove();if(active===this)active=null;}
+ destroy(){this.close();clearTimeout(this.saveTimer);this.abort.abort();}
+ async browseFolders(){
+  if(this.folderPanel||!this.dialog)return;
+  const epoch=this.epoch,panel=el('section','','dg-folder-browser');this.folderPanel=panel;
+  panel.setAttribute('role','region');panel.setAttribute('aria-label','Scegli cartella output');
+  const main=this.dialog.querySelector('main');main.prepend(panel);
+  const input=el('input');input.type='text';input.value=this.config.output_dir||'';input.setAttribute('aria-label','Percorso cartella');
+  const info=el('p'),list=el('div','','dg-folders');let busy=false,current='';
+  const done=()=>{panel.remove();if(this.folderPanel===panel)this.folderPanel=null;};
+  const use=button('Usa questa cartella',()=>{this.config.output_dir=current;this.save();done();this.render();},'dg-primary');use.disabled=true;
+  const go=button('Vai',()=>load(input.value));
+  panel.append(el('h2','Cartella di salvataggio'),el('p','Naviga nelle cartelle del computer che esegue Comfy.'),input,go,button('Annulla',done),use,info,list);
+  const load=async path=>{
+   if(busy)return;busy=true;go.disabled=true;use.disabled=true;info.textContent='Caricamento cartelle…';list.replaceChildren();
+   try{
+    const r=await this.request('/dogma/h3/v2/folders?'+new URLSearchParams({path:path||''}));
+    if(epoch!==this.epoch||this.folderPanel!==panel)return;
+    current=r.path;input.value=current;info.textContent=r.truncated?'Mostrate le prime 500 cartelle. Puoi inserire il percorso completo.':'Seleziona una sottocartella oppure conferma questa cartella.';
+    if(r.parent)list.append(button('↑ Cartella superiore',()=>load(r.parent)));
+    for(const d of r.drives||[])list.append(button(d.name,()=>load(d.path)));
+    for(const d of r.directories||[])list.append(button('📁 '+d.name,()=>load(d.path)));
+    use.disabled=false;
+   }catch(e){if(epoch===this.epoch&&this.folderPanel===panel&&e.name!=='AbortError')info.textContent=e.message;}
+   finally{busy=false;go.disabled=false;}
+  };
+  input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();load(input.value);}});
+  await load(input.value);
+ }
  sound(){
   if(!this.config.sound)return;
   try{this.audio ||= new (window.AudioContext||window.webkitAudioContext)();this.audio.resume();const t=this.audio.currentTime;
@@ -75,7 +132,7 @@ export class DirectorStudio {
   if(change&&this.page!=='prepare')this.render();else this.status();
  }
  async recover(render=true){
-  if(!this.config||this.recovering)return;this.recovering=true;
+  if(!this.config||!this.dialog||this.loading||this.recovering)return;const epoch=this.epoch;this.recovering=true;
   try{
    const d=await this.request('/dogma/h3/v2/session/'+this.config.session);
    const q=await this.request('/queue');
@@ -87,19 +144,19 @@ export class DirectorStudio {
    }else if(!owned)this.pending=false;
    if(owned&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
    if(render||JSON.stringify(d)!==JSON.stringify(this.data))this.applyState(d);else this.status();
-  }catch(e){this.data.message='Stato non disponibile: '+e.message+'. Puoi sempre tornare a Comfy.';this.status();}
-  finally{this.recovering=false;}
+  }catch(e){if(epoch===this.epoch&&e.name!=='AbortError'){this.data.message='Stato non disponibile: '+e.message;this.status();}}
+  finally{if(epoch===this.epoch)this.recovering=false;}
  }
  fail(message){this.pending=false;this.data.status='error';this.data.message=message;this.status();this.sound();}
  status(){
   const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||'Prepara il lavoro, genera i provini e scegli quale continuare.';s.dataset.state=this.data.status;}
-  this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending);
+  this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting);
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
   const stop=this.dialog?.querySelector('[data-stop]');if(stop)stop.disabled=!this.pending;
  }
  async queue(action){
-  if(this.pending)return;this.armSound();
+  if(this.pending||this.submitting)return;this.submitting=true;this.armSound();
   try{
    if(action==='finish'&&!this.config.selected)throw new Error('Scegli prima un provino.');
    if(action==='draft'){
@@ -125,7 +182,7 @@ export class DirectorStudio {
    const result=await api.queuePrompt(0,graph);
    if(!result?.prompt_id)throw new Error('Comfy non ha restituito un identificativo di esecuzione.');
    this.promptId=result.prompt_id;this.page=action==='draft'?'choose':'finish';this.data.message='In coda · attendo il motore';this.render();
-  }catch(e){const detail=e.response?.node_errors||e.response?.error;this.fail(detail?JSON.stringify(detail,null,2):e.message);}
+  }catch(e){if(e.name!=='AbortError'){const detail=e.response?.node_errors||e.response?.error;this.fail(detail?JSON.stringify(detail,null,2):e.message);}}finally{this.submitting=false;this.status();}
  }
  async stop(){
   const q=await this.request('/queue');
@@ -155,15 +212,15 @@ export class DirectorStudio {
   const p=this.section(parent,title);const name=obj[key];
   if(name){const media=el(kind==='video'?'video':'img');media.src=inputURL(name);if(kind==='video')media.controls=true;media.className='dg-asset';p.append(media,el('small',name));}
   const upload=el('input');upload.type='file';upload.accept=kind==='video'?'video/*':'image/*';upload.hidden=true;
-  upload.onchange=async()=>{const file=upload.files?.[0];if(!file)return;try{const data=new FormData();data.append('image',file);data.append('type','input');data.append('subfolder','DOGMA_DIRECTOR');const res=await this.request('/upload/image',{method:'POST',body:data});obj[key]=(res.subfolder?res.subfolder+'/':'')+res.name;this.save();this.render();}catch(e){this.fail(e.message);}};
+  upload.onchange=async()=>{const file=upload.files?.[0];if(!file)return;try{const data=new FormData();data.append('image',file);data.append('type','input');data.append('subfolder','DOGMA_DIRECTOR');const res=await this.request('/upload/image',{method:'POST',body:data});obj[key]=(res.subfolder?res.subfolder+'/':'')+res.name;this.save();this.render();}catch(e){if(e.name!=='AbortError')this.fail(e.message);}};
   p.append(upload,button(name?'Cambia file':'Carica file',()=>upload.click()));
   if(name||remove)p.append(button('Rimuovi',()=>{if(remove)remove();else obj[key]='';this.save();this.render();}));
   return p;
  }
  render(){
-  if(!this.dialog)return;
-  this.dialog.querySelectorAll('video').forEach(v=>v.pause());this.dialog.replaceChildren();
-  const header=el('header','','dg-header');const logo=el('img');logo.src=new URL('dogma_logo_white.png',ROOT);logo.alt='DOGMA';header.append(logo,el('div','ORIGINALS / H3 DIRECTOR','dg-brand'),button('Torna a Comfy',()=>this.close()));this.dialog.append(header);
+  if(!this.dialog||this.loading)return;
+  this.folderPanel=null;this.dialog.querySelectorAll('video').forEach(v=>v.pause());this.dialog.replaceChildren();
+  this.dialog.append(this.header());
   const nav=el('nav');for(const [key,label]of[['prepare','01 Prepara'],['choose','02 Scegli'],['finish','03 Finalizza']])nav.append(button(label,()=>{this.page=key;this.render();},this.page===key?'is-active':''));
   const fresh=button('Nuova sessione',()=>{if(this.pending)return;if(!window.confirm('Avviare una nuova sessione? I video precedenti restano salvati. Salva il workflow in Comfy per poter riaprire anche la galleria precedente.'))return;this.config.session=crypto.randomUUID();this.config.selected='';this.config.action='draft';this.data={candidates:[],finals:[],status:'new'};this.promptId=null;this.A=this.B=null;this.previewData=null;this.page='prepare';this.save();this.render();});fresh.dataset.queue='';nav.append(fresh);
   const stop=button('Interrompi',()=>this.stop().catch(e=>{this.data.message='Interruzione non confermata: '+e.message;this.status();}));stop.dataset.stop='';nav.append(stop);const state=el('div','','dg-state');state.append(el('div','','dg-status'),el('progress','','dg-progress'),el('small','','dg-progress-label'));this.dialog.append(nav,state);
@@ -178,7 +235,7 @@ export class DirectorStudio {
    c.draft.turbo='';c.finish.turbo='';c.draft.steps=24;c.finish.steps=24;c.finish.sigmas='';this.save();this.render();
   }});
   this.field(intro,'Cartella output · vuoto = cartella Comfy',c,'output_dir',{hint:'Percorso assoluto sul computer dove gira Comfy. I video vengono copiati qui e restano visibili nella galleria.'});
-  intro.append(button('Scegli cartella…',async()=>{try{const r=await this.request('/dogma/h3/v2/choose-folder',{method:'POST'});if(r.path){c.output_dir=r.path;this.save();this.render();}}catch(e){this.fail(e.message);}}));
+  intro.append(button('Scegli cartella…',()=>this.browseFolders()));
   this.field(intro,'Genera audio nei video',c,'generate_audio',{type:'checkbox',hint:'Disattivato: provini e finali vengono esportati senza traccia audio. H3 mantiene internamente i latenti audiovisivi.'});
   const assets=el('div','','dg-grid');body.append(assets);
   if(c.task==='i2v'){this.asset(assets,'Primo fotogramma · facoltativo',c,'first');this.asset(assets,'Ultimo fotogramma · facoltativo',c,'last');}
@@ -267,7 +324,7 @@ export class DirectorStudio {
   const out=el('div','','dg-gallery');body.append(out);
   for(const item of (this.data.finals||[]).filter(x=>!x.candidate||x.candidate===p.id)){
    const card=this.section(out,item.label);card.append(film(item.video),el('p',item.saved_path||'Risultato precedente · cartella Comfy','dg-saved-path'));
-   if(item.saved_path)card.append(button('Apri cartella',async()=>{try{await this.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,id:item.id})});}catch(e){this.fail(e.message);}}));
+   if(item.saved_path){const open=button('Apri cartella',async()=>{if(open.disabled)return;open.disabled=true;try{await this.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,id:item.id})});}catch(e){if(e.name!=='AbortError')this.fail(e.message);}finally{open.disabled=false;}});card.append(open);}
   }
  }
 }

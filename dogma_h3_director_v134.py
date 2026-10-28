@@ -489,7 +489,8 @@ def register_routes():
     @routes.post('/dogma/h3/v2/open-folder')
     async def open_folder(request):
         local_request(request)
-        data=await request.json(); st=state(data['session'])
+        import asyncio
+        data=await request.json(); st=await asyncio.to_thread(state,data['session'])
         item=next((x for x in st.get('finals',[])+st.get('candidates',[]) if x.get('id')==data.get('id')),None)
         if not item or not item.get('saved_path'): raise web.HTTPNotFound(text='Risultato non disponibile.')
         directory=Path(item['saved_path']).parent
@@ -501,30 +502,56 @@ def register_routes():
     @routes.post('/dogma/h3/v2/choose-folder')
     async def choose_folder(request):
         local_request(request)
-        import asyncio,subprocess
-        if os.name!='nt': raise web.HTTPBadRequest(text='Inserisci il percorso della cartella.')
-        script="""[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-Add-Type -AssemblyName System.Windows.Forms
-$picker = New-Object System.Windows.Forms.FolderBrowserDialog
-$picker.Description = 'DOGMA - Cartella output'
-if ($picker.ShowDialog() -eq 'OK') { [Console]::Write($picker.SelectedPath) }
-"""
-        result=await asyncio.to_thread(subprocess.run,['powershell','-NoProfile','-STA','-Command',script],capture_output=True,text=True,encoding='utf-8',timeout=120,creationflags=subprocess.CREATE_NO_WINDOW)
-        if result.returncode: raise web.HTTPBadRequest(text='Selettore non disponibile. Inserisci il percorso.')
-        return web.json_response({'path':result.stdout.strip()})
+        raise web.HTTPGone(text='Aggiorna il pannello DOGMA: la scelta cartella ora avviene nel browser.')
 
-    @routes.get('/dogma/h3/v2/catalog')
-    async def catalog(request):
+    @routes.get('/dogma/h3/v2/folders')
+    async def folders(request):
+        local_request(request)
+        import asyncio
+        def browse():
+            directory=Path(request.query.get('path') or folder_paths.get_output_directory()).expanduser().resolve()
+            if not directory.is_dir(): raise ValueError('Cartella inesistente. Inserisci un percorso valido.')
+            directories=[]
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_dir(): directories.append({'name':entry.name,'path':entry.path})
+                    except OSError: continue
+                    if len(directories)>500: break
+            directories.sort(key=lambda x:x['name'].casefold())
+            drives=[]
+            if os.name=='nt':
+                import ctypes
+                bits=ctypes.windll.kernel32.GetLogicalDrives()
+                drives=[{'name':chr(65+i)+':','path':chr(65+i)+':/'} for i in range(26) if bits & (1<<i)]
+            return {'path':str(directory),'parent':str(directory.parent) if directory.parent!=directory else None,
+                    'drives':drives,'directories':directories[:500],'truncated':len(directories)>500}
+        try: return web.json_response(await asyncio.to_thread(browse))
+        except (ValueError,OSError) as exc: raise web.HTTPBadRequest(text=str(exc))
+
+    def build_catalog():
         def files(k):
             try: return folder_paths.get_filename_list(k)
             except KeyError: return []
-        return web.json_response({'defaults':defaults(),'models':files('diffusion_models'),'clip':files('text_encoders'),
+        return {'defaults':defaults(),'models':files('diffusion_models'),'clip':files('text_encoders'),
             'vae':files('vae'),'tiny_vae':['none']+files('vae_approx'),'loras':files('loras'),'upscalers':files('latent_upscale_models'),
             'samplers':comfy.samplers.KSampler.SAMPLERS,'schedulers':comfy.samplers.KSampler.SCHEDULERS,
-            'nodes':list(nodes.NODE_CLASS_MAPPINGS)})
+            'nodes':list(nodes.NODE_CLASS_MAPPINGS)}
+    catalog_task=None
+    catalog_time=0
+    @routes.get('/dogma/h3/v2/catalog')
+    async def catalog(request):
+        import asyncio,time
+        nonlocal catalog_task,catalog_time
+        if catalog_task is None or (catalog_task.done() and (catalog_task.exception() is not None or time.monotonic()-catalog_time>30)):
+            catalog_time=time.monotonic()
+            catalog_task=asyncio.create_task(asyncio.to_thread(build_catalog))
+        return web.json_response(await asyncio.shield(catalog_task))
+
     @routes.get('/dogma/h3/v2/session/{session}')
     async def session(request):
-        try: return web.json_response(state(request.match_info['session']))
+        import asyncio
+        try: return web.json_response(await asyncio.to_thread(state,request.match_info['session']))
         except (ValueError,OSError): return web.json_response({'error':'Sessione non disponibile'},status=400)
 
 
