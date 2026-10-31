@@ -21,21 +21,25 @@ def defaults():
         generate_audio=True, output_dir="", job="DOGMA", task="i2v", exploration="seeds", count=2, seed=64,
         prompt="", variants=[{"text":"", "loras":[]}], trial_loras={},
         first="", last="", refs=[], common_loras=[], seconds=5,
-        auto_aspect=True, long_edge=672, width=672, height=384, sound=True,
+        auto_aspect=True, long_edge=512, width=512, height=288, sound=True,
         models={"i2v":"minimax_h3_fl2va_pruned_int8_convrot.safetensors",
                 "t2v":"minimax_h3_fl2va_pruned_int8_convrot.safetensors", "ref2v":"minimax_h3_ref2va_pruned_int8_convrot.safetensors", "clip":"qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
                 "vae":"minimax_h3_video_vae_fp16.safetensors", "audio":"minimax_h3_audio_vae_fp32.safetensors"},
         draft={"turbo":"minimax_h3_fl2v_turbo_4step_v1.0_768p_comfyui_bf16.safetensors",
                "turbo_strength":1., "steps":4, "sampler":"euler", "scheduler":"simple",
                "shift_video":12., "shift_audio":3., "lying":0., "lying_start":.1,"lying_end":.9},
-        finish={"stages":"both", "resolution":"2k", "scale":2., "turbo":"minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
+        develop={"mode":"guided", "long_edge":960, "turbo":"", "turbo_strength":1.,
+                 "steps":20, "sampler":"res_multistep", "scheduler":"simple", "denoise":.65,
+                 "shift_video":12., "shift_audio":3., "lying":-.01, "lying_start":.1, "lying_end":.9},
+        selected_development="",
+        finish={"stages":"both", "resolution":"2k", "scale":2., "turbo":"",
                 "turbo_strength":1., "sampler":"er_sde", "scheduler":"simple", "steps":8,
                 "sigmas":"0.9035, 0.8000, 0.6316, 0.3158, 0.0000", "denoise":.35,
                 "shift_video":12.,"shift_audio":3.,"lying":0.,"lying_start":.1,"lying_end":.9,
                 "upscaler":"minimax_h3_latent_upscaler_3d_bf16.safetensors",
                 "ultimate_scale":1., "tile_width":768,"tile_height":512,"tile_padding":64,
                 "mask_blur":16,"ultimate_steps":8,"ultimate_denoise":.14,
-                "ultimate_model":"minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+                "ultimate_model":"minimax_h3_ref2va_pruned_int8_convrot.safetensors", "ultimate_sampler":"res_multistep", "ultimate_seed":42, "refine_seed":444,
                 "ultimate_turbo":"minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16.safetensors",
                 "ultimate_strength":1.},
         rife={"enabled":True,"fps":48,"model":"flownet.pkl","scale":1.,"batch_size":1,"fp16":True},
@@ -57,7 +61,7 @@ def parse_config(raw):
     if c['finish']['resolution'] not in ('1k','2k','3k','4k'):
         raise ValueError('Risoluzione: scegli 1K, 2K, 3K o 4K.')
     c['session']=str(uuid.UUID(c['session']))
-    if c['action'] not in ('draft','finish'): raise ValueError('Azione non valida.')
+    if c['action'] not in ('draft','develop','finish'): raise ValueError('Azione non valida.')
     if c['task'] not in ('i2v','t2v','ref2v'): raise ValueError('Scegli I2V, T2V o Ref2Video.')
     if c['exploration'] not in ('seeds','prompts'): raise ValueError('Modalità provini non valida.')
     if not 1<=int(c['count'])<=10: raise ValueError('Scegli da 1 a 10 provini.')
@@ -72,7 +76,10 @@ def parse_config(raw):
     if not 1<=int(c['rife']['batch_size'])<=32: raise ValueError('RIFE batch: da 1 a 32.')
     if float(c['rife']['scale']) not in (.25,.5,1.,2.,4.): raise ValueError('Scala RIFE non valida.')
     if not 0<=int(c['seed'])<2**53: raise ValueError('Seed fuori intervallo.')
-    for phase in ('draft','finish'):
+    if c['develop']['mode'] not in ('guided','native'): raise ValueError('Modalità sviluppo non valida.')
+    if not 512<=int(c['develop']['long_edge'])<=1536: raise ValueError('Sviluppo: lato lungo 512–1536 px.')
+    if not 0<float(c['develop']['denoise'])<1: raise ValueError('Sviluppo guidato: denoise maggiore di 0 e minore di 1.')
+    for phase in ('draft','develop','finish'):
         s=c[phase]
         if not 0<=float(s['lying_start'])<=float(s['lying_end'])<=1: raise ValueError('Intervallo Lying Sigma non valido.')
         if not 1<=int(s['steps'])<=100: raise ValueError('Step: da 1 a 100.')
@@ -248,7 +255,8 @@ def prepare_model(res,c,trial,phase,uid):
     for l in stack:
         if l.get('name') and l.get('enabled',True) and float(l.get('strength',1))!=0:
             model=nodes.LoraLoaderModelOnly().load_lora_model_only(model,l['name'],float(l.get('strength',1)))[0]
-    model=MiniMaxH3SigmaShift.execute(model,float(s['shift_video']),float(s['shift_audio']))[0]
+    if not s.get('native_shift',False):
+        model=MiniMaxH3SigmaShift.execute(model,float(s['shift_video']),float(s['shift_audio']))[0]
     p=c['preview']
     if p['enabled']:
         model=call('ModelPreviewOverrideKJ',uid,model=model,max_resolution=int(p['max_resolution']),
@@ -286,9 +294,17 @@ def sample(model,cond,latent,s,seed,manual=False,progress=None):
     def callback(step,x0,x,total):
         if preview: preview(step,x0,x,total)
         progress(step+1,total)
-    result=guider.sample(Noise_RandomNoise(seed).generate_noise(latent),tensor,sampler_for(s),sigmas,
+    noise=Noise_RandomNoise(seed).generate_noise(latent)
+    if s.get('lock_audio'):
+        from comfy.nested_tensor import NestedTensor
+        video,audio=tensor.unbind(); nv,na=noise.unbind()
+        noise=NestedTensor([nv,torch.zeros_like(na)])
+        latent['noise_mask']=NestedTensor([torch.ones_like(video),torch.zeros_like(audio)])
+    result=guider.sample(noise,tensor,sampler_for(s),sigmas,
         denoise_mask=latent.get('noise_mask'),callback=callback,
         disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,seed=seed)
+    if s.get('lock_audio'):
+        result=NestedTensor([result.unbind()[0],audio.to(result.unbind()[1].device)])
     latent['samples']=result.to(comfy.model_management.intermediate_device())
     latent.pop('downscale_ratio_spacial',None);latent.pop('downscale_ratio_temporal',None)
     return latent
@@ -372,7 +388,7 @@ class DOGMAH3DirectorEngineV2:
                 w,h=dimensions(c,(first.shape[2],first.shape[1]) if first is not None else None)
                 n=frames(c['seconds']); res=load_resources(c)
                 run=str(uuid.uuid4()); dest=root/run; dest.mkdir()
-                update('running','Preparazione prompt…',candidates=[],finals=[],run=run,width=w,height=h,frames=n,total_trials=len(plan))
+                update('running','Preparazione prompt…',candidates=[],developments=[],finals=[],run=run,width=w,height=h,frames=n,total_trials=len(plan))
                 # Encode once for shared prompts; different prompt cards preserve all paragraphs.
                 encoded={}
                 for i,p in enumerate(plan):
@@ -395,10 +411,56 @@ class DOGMAH3DirectorEngineV2:
                     st['candidates'].append(candidate)
                     update('running',f'Provino {i+1}/{len(plan)} pronto')
                     del result,images,audio,model
-                update('ready','Provini pronti. Scegli quello da finalizzare.',active=None)
-            else:
+                update('ready','Bozze pronte. Scegli quale sviluppare in qualità.',active=None)
+            elif c['action']=='develop':
                 candidate=next((p for p in st.get('candidates',[]) if p['id']==c['selected']),None)
-                if candidate is None: raise ValueError('Seleziona un provino disponibile nella galleria.')
+                if candidate is None: raise ValueError('Scegli una bozza da sviluppare.')
+                frozen=parse_config(candidate['config']); frozen['develop']=copy.deepcopy(c['develop']); frozen['preview']=c['preview']
+                # No Turbo from the draft is inherited. Only the chosen additional LoRAs persist.
+                d=frozen['develop']; frozen['long_edge']=int(d['long_edge'])
+                res=load_resources(frozen); a=assets(frozen)
+                w,h=dimensions(dict(auto_aspect=True,long_edge=d['long_edge']), (candidate['width'],candidate['height']))
+                n=candidate['frames']; folder=root/'developments'/str(uuid.uuid4()); folder.mkdir(parents=True)
+                update('running','Sviluppo · preparazione alla risoluzione di qualità')
+                cond,empty=condition(frozen,a,res,candidate['prompt'],w,h,n)
+                settings=copy.deepcopy(d)
+                if d['mode']=='guided':
+                    from comfy.nested_tensor import NestedTensor
+                    path=(root/candidate['latent']).resolve()
+                    if not path.is_relative_to(root.resolve()): raise ValueError('Percorso latenti non valido.')
+                    saved=unpack(torch.load(path,map_location='cpu',weights_only=True))
+                    video,audio_lat=saved['samples'].unbind()
+                    update('running','Sviluppo · trasferimento dei latenti della bozza scelta')
+                    up=call('MinimaxH3LatentUpscaler3D',latent={'samples':video},model_name=c['finish']['upscaler'],
+                        mode={'mode':'target dimensions','width':w,'height':h},align=32,keep_proportion=False,
+                        device='cuda',precision='fp16',offload_after_upscale=True)[0]
+                    v=up['samples']; h,w=v.shape[-2]*16,v.shape[-1]*16
+                    if tuple(v.shape)!=tuple(empty['samples'].unbind()[0].shape):
+                        cond,empty=condition(frozen,a,res,candidate['prompt'],w,h,n)
+                    expected_video,expected_audio=empty['samples'].unbind()
+                    if tuple(v.shape)!=tuple(expected_video.shape) or tuple(audio_lat.shape)!=tuple(expected_audio.shape):
+                        raise ValueError('Dimensioni dei latenti incompatibili con lo sviluppo. Rigenera la bozza con la stessa durata e modalità.')
+                    latent={'samples':NestedTensor([v,audio_lat])}; settings['lock_audio']=True
+                else:
+                    latent=empty; settings['denoise']=1.
+                model=prepare_model(res,frozen,candidate,'develop',unique_id)
+                update('running','Sviluppo · campionamento di qualità',active='develop')
+                started=time.monotonic()
+                result=sample(model,cond,latent,settings,candidate['seed'],progress=progress)
+                torch.save(pack(result),folder/'developed.pt')
+                update('running','Sviluppo · decodifica e salvataggio')
+                images,audio=decode(res,result,c['generate_audio'])
+                job=re.sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA'
+                movie=folder/(job+'_H3_SVILUPPO.mp4'); save_video(images,audio,movie,candidate)
+                item=dict(id=uuid.uuid4().hex,candidate=candidate['id'],label=candidate['label']+' · sviluppo',
+                    video=view_file(movie),saved_path=export_file(movie,c),latent=str((folder/'developed.pt').relative_to(root)),
+                    width=images.shape[2],height=images.shape[1],frames=n,config=frozen,mode=d['mode'],
+                    elapsed_seconds=round(time.monotonic()-started,2),prompt=candidate['prompt'],seed=candidate['seed'],loras=candidate['loras'])
+                st.setdefault('developments',[]).append(item)
+                update('developed','Sviluppo pronto. Controllalo e scegli quale finalizzare.',active=None)
+            else:
+                candidate=next((p for p in st.get('developments',[]) if p['id']==c.get('selected_development') and p['candidate']==c['selected']),None)
+                if candidate is None: raise ValueError('Sviluppa prima la bozza e seleziona uno sviluppo disponibile.')
                 if c['rife']['enabled']: rife_preflight(c['rife'])
                 # Freeze source/prompt/model/LoRAs to selected trial; only finishing controls are editable.
                 frozen=parse_config(candidate['config']); frozen['finish']=c['finish']; frozen['preview']=c['preview']
@@ -426,7 +488,7 @@ class DOGMAH3DirectorEngineV2:
                     cond=condition(frozen,a,res,candidate['prompt'],w,h,n)[0]
                     model=prepare_model(res,frozen,candidate,'finish',unique_id)
                     update('running','Finalizzazione · raffinamento dei latenti')
-                    latent=sample(model,cond,latent,fin,candidate['seed'],True,progress=progress)
+                    latent=sample(model,cond,latent,dict(fin,lock_audio=True),int(fin['refine_seed']),True,progress=progress)
                     torch.save(pack(latent),folder/'latent_refined.pt')
                 update('running','Finalizzazione · decodifica')
                 images,audio=decode(res,latent,c['generate_audio'])
@@ -467,13 +529,14 @@ class DOGMAH3DirectorEngineV2:
                     ultimate_config=copy.deepcopy(frozen)
                     ultimate_config['finish']['turbo']=fin['ultimate_turbo']
                     ultimate_config['finish']['turbo_strength']=fin['ultimate_strength']
-                    model=prepare_model(ultimate_res,ultimate_config,candidate,'finish',unique_id)
+                    ultimate_config['finish']['native_shift']=True
+                    model=prepare_model(ultimate_res,ultimate_config,dict(candidate,loras=[]),'finish',unique_id)
                     from comfy_extras.nodes_minimax_h3 import MiniMaxH3ImageToVideo
                     cond=MiniMaxH3ImageToVideo.execute(res['clip'],res['vae'],candidate['prompt'],w,h,padded_n,None,None)[0]
                     guider=Guider_Basic(model); guider.set_conds(cond)
                     sigmas=BasicScheduler.execute(model,fin['scheduler'],int(fin['ultimate_steps']),float(fin['ultimate_denoise']))[0]
-                    images=call('UltimateSDUpscaleNoUpscaleGuider',unique_id,upscaled_image=padded,guider=guider,sampler=sampler_for(fin),sigmas=sigmas,
-                        vae=res['vae'],seed=candidate['seed'],mode_type='Chess',tile_width=int(fin['tile_width']),tile_height=int(fin['tile_height']),
+                    images=call('UltimateSDUpscaleNoUpscaleGuider',unique_id,upscaled_image=padded,guider=guider,sampler=sampler_for(dict(fin,sampler=fin['ultimate_sampler'],lying=0)),sigmas=sigmas,
+                        vae=res['vae'],seed=int(fin['ultimate_seed']),mode_type='Chess',tile_width=int(fin['tile_width']),tile_height=int(fin['tile_height']),
                         mask_blur=int(fin['mask_blur']),tile_padding=int(fin['tile_padding']),seam_fix_mode='None',seam_fix_denoise=.15,
                         seam_fix_mask_blur=8,seam_fix_width=64,seam_fix_padding=16,tile_overlap_mode='Reprocess Overlap',tiled_decode=True,batch_size=1,anchor_context=False)[0][:count]
                     out=folder/(job+f'_H3_ULTIMATE_{fps}fps.mp4')
@@ -521,7 +584,7 @@ def register_routes():
         local_request(request)
         import asyncio
         data=await request.json(); st=await asyncio.to_thread(state,data['session'])
-        item=next((x for x in st.get('finals',[])+st.get('candidates',[]) if x.get('id')==data.get('id')),None)
+        item=next((x for x in st.get('finals',[])+st.get('developments',[])+st.get('candidates',[]) if x.get('id')==data.get('id')),None)
         if not item or not item.get('saved_path'): raise web.HTTPNotFound(text='Risultato non disponibile.')
         directory=Path(item['saved_path']).parent
         if not directory.is_dir(): raise web.HTTPNotFound(text='Cartella non disponibile.')

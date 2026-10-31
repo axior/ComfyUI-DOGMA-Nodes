@@ -2,7 +2,7 @@ import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.38',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.39',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -46,7 +46,7 @@ export class DirectorStudio {
  presetValues(phase,kind='dogma',task=this.config.task){
   const s={},base=this.catalog.defaults[phase];
   for(const k of ['sampler','scheduler','steps','shift_video','shift_audio','lying','lying_start','lying_end','turbo_strength'])s[k]=base[k];
-  s.turbo=this.turbo(task,phase==='draft'?4:8);
+  s.turbo=phase==='draft'?this.turbo(task,4):base.turbo;
   if(phase==='finish'){
    s.sigmas=kind==='conservative'?'':'0.9035, 0.8000, 0.6316, 0.3158, 0.0000';s.denoise=kind==='conservative'?.18:.35;
    if(this.family(task)==='ref2v')s.steps=4;
@@ -176,7 +176,7 @@ export class DirectorStudio {
  applyState(d){
   const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length;
   this.data=d;
-  if(['ready','done','error'].includes(d.status)){this.pending=false;d.progress=null;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
+  if(['ready','developed','done','error'].includes(d.status)){this.pending=false;d.progress=null;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
   if(change&&this.page!=='prepare')this.render();else this.status();
  }
  async recover(render=true){
@@ -207,7 +207,7 @@ export class DirectorStudio {
  async queue(action){
   if(this.pending||this.submitting)return;this.submitting=true;this.armSound();
   try{
-   if(action==='finish'&&!this.config.selected)throw new Error('Scegli prima un provino.');
+   if(action!=='draft'&&!this.config.selected)throw new Error('Scegli prima un provino.');
    if(action==='draft'){
     if(this.config.task==='i2v'&&!this.config.first&&!this.config.last)throw new Error('Carica il primo o l’ultimo fotogramma.');
     if(this.config.task==='ref2v'&&!this.config.refs.length)throw new Error('Carica almeno una reference.');
@@ -217,7 +217,9 @@ export class DirectorStudio {
     if(!this.catalog.models.includes(checkpoint))throw new Error('Seleziona un checkpoint installato per '+this.config.task.toUpperCase()+' nelle impostazioni avanzate.');
     if(this.config.refs.some(r=>!r.name)&&this.config.task==='ref2v')throw new Error('Carica o rimuovi le reference vuote.');
    }
+   if(action==='finish'&&!this.data.developments?.some(p=>p.id===this.config.selected_development&&p.candidate===this.config.selected))throw new Error('Scegli prima uno sviluppo di qualità.');
    const required=[];
+   if(action==='develop'&&this.config.develop.mode==='guided')required.push('MinimaxH3LatentUpscaler3D');
    if(this.config.preview.enabled)required.push('ModelPreviewOverrideKJ');
    if(action==='finish'&&this.config.finish.stages!=='ultimate')required.push('MinimaxH3LatentUpscaler3D');
    if(action==='finish'&&this.config.finish.stages!=='latent')required.push('UltimateSDUpscaleNoUpscaleGuider');
@@ -230,7 +232,7 @@ export class DirectorStudio {
    // Direct API returns a prompt_id; app.queuePrompt() may return false for accepted queued work.
    const result=await api.queuePrompt(0,graph);
    if(!result?.prompt_id)throw new Error('Comfy non ha restituito un identificativo di esecuzione.');
-   this.promptId=result.prompt_id;this.page=action==='draft'?'choose':'finish';this.data.message='In coda · attendo il motore';this.render();
+   this.promptId=result.prompt_id;this.page=action==='draft'?'choose':action==='develop'?'develop':'finish';this.data.message='In coda · attendo il motore';this.render();
   }catch(e){if(e.name!=='AbortError'){const detail=e.response?.node_errors||e.response?.error;this.fail(detail?JSON.stringify(detail,null,2):e.message);}}finally{this.submitting=false;this.status();}
  }
  async stop(){
@@ -274,11 +276,11 @@ export class DirectorStudio {
   if(!this.dialog||this.loading)return;
   this.folderPanel=null;this.dialog.querySelectorAll('video').forEach(v=>v.pause());this.dialog.replaceChildren();
   this.dialog.append(this.header());
-  const nav=el('nav');for(const [key,label]of[['prepare','01 Prepara'],['choose','02 Scegli'],['finish','03 Finalizza']])nav.append(button(label,()=>{this.page=key;this.render();},this.page===key?'is-active':''));
-  const fresh=button('Nuova sessione',()=>{if(this.pending)return;if(!window.confirm('Avviare una nuova sessione? I video precedenti restano salvati. Salva il workflow in Comfy per poter riaprire anche la galleria precedente.'))return;this.config.session=crypto.randomUUID();this.config.selected='';this.config.action='draft';this.data={candidates:[],finals:[],status:'new'};this.promptId=null;this.A=this.B=null;this.previewData=null;this.page='prepare';this.save();this.render();});fresh.dataset.queue='';nav.append(fresh);
+  const nav=el('nav');for(const [key,label]of[['prepare','01 Prepara'],['choose','02 Scegli'],['develop','03 Sviluppa'],['finish','04 Finalizza']])nav.append(button(label,()=>{this.page=key;this.render();},this.page===key?'is-active':''));
+  const fresh=button('Nuova sessione',()=>{if(this.pending)return;if(!window.confirm('Avviare una nuova sessione? I video precedenti restano salvati. Salva il workflow in Comfy per poter riaprire anche la galleria precedente.'))return;this.config.session=crypto.randomUUID();this.config.selected='';this.config.action='draft';this.config.selected_development='';this.data={candidates:[],developments:[],finals:[],status:'new'};this.promptId=null;this.A=this.B=null;this.previewData=null;this.page='prepare';this.save();this.render();});fresh.dataset.queue='';nav.append(fresh);
   const stop=button('Interrompi',()=>this.stop().catch(e=>{this.data.message='Interruzione non confermata: '+e.message;this.status();}));stop.dataset.stop='';nav.append(stop);const state=el('div','','dg-state');state.append(el('div','','dg-status'),el('progress','','dg-progress'),el('small','','dg-progress-label'));this.dialog.append(nav,state);
   const body=el('main');this.dialog.append(body);
-  if(this.page==='prepare')this.prepare(body);if(this.page==='choose')this.choose(body);if(this.page==='finish')this.finish(body);
+  if(this.page==='prepare')this.prepare(body);if(this.page==='choose')this.choose(body);if(this.page==='develop')this.develop(body);if(this.page==='finish')this.finish(body);
   const foot=el('footer','Salvataggio automatico della sessione · Cartella output configurabile in Prepara · Esc torna a Comfy');this.dialog.append(foot);this.status();
  }
  prepare(body){
@@ -351,19 +353,36 @@ export class DirectorStudio {
   items.forEach(p=>{
    const card=this.section(grid,p.label);if(p.id===this.config.selected)card.classList.add('is-selected');card.append(film(p.video),el('p',`${p.width} × ${p.height} · ${(p.frames/24).toFixed(2)} s · seed ${p.seed}`));
    const txt=el('details');txt.append(el('summary','Prompt e LoRA del provino'),el('pre',p.prompt),el('pre',p.loras.map(l=>`${l.name} · ${l.strength}`).join('\n')||'Nessuna LoRA aggiuntiva'));card.append(txt);
-   card.append(button('Scegli e continua',()=>{this.config.selected=p.id;this.save();this.page='finish';this.render();},'dg-primary'));
+   card.append(button('Scegli e sviluppa',()=>{this.config.selected=p.id;this.config.selected_development='';this.save();this.page='develop';this.render();},'dg-primary'));
    for(const side of ['A','B'])card.append(button('Confronta '+side,()=>{this[side]=p.id;this.render();}));
   });
   const a=items.find(p=>p.id===this.A),b=items.find(p=>p.id===this.B);
   if(a&&b){const compare=this.section(body,'Confronto A / B');const g=el('div','','dg-grid');const av=film(a.video),bv=film(b.video);av.muted=bv.muted=true;g.append(av,bv);compare.append(g,button('Riproduci insieme',()=>{av.currentTime=bv.currentTime=0;av.play();bv.play();}),button('Pausa',()=>{av.pause();bv.pause();}));}
  }
- finish(body){
+ develop(body){
   const p=this.data.candidates?.find(x=>x.id===this.config.selected);
-  if(!p){body.append(el('p','Scegli un provino dalla sezione Scegli.'));return;}
+  if(!p){body.append(el('p','Scegli prima una bozza.'));return;}
+  const src=this.section(body,p.label+' · bozza scelta');src.append(film(p.video));
+  const s=this.section(body,'Sviluppo di qualità');const d=this.config.develop;
+  this.field(s,'Metodo',d,'mode',{options:[['guided','Continua la bozza scelta (predefinito)'],['native','Rigenera in qualità · il movimento può cambiare']]});
+  this.field(s,'Lato lungo dello sviluppo',d,'long_edge',{type:'number',min:512,max:1536,step:32});
+  s.append(el('p','Standard: circa 960 × 544 per 16:9, 20 step senza Turbo. Continua usa i latenti salvati della bozza; prompt, seed, sorgenti e LoRA vengono ripresi automaticamente. La risoluzione maggiore può cambiare dettagli e movimento.'));
+  const adv=el('details','','dg-card');adv.append(el('summary','Campionamento dello sviluppo'));body.append(adv);
+  this.field(adv,'Denoise · solo Continua (maggiore = più cambiamento)',d,'denoise',{type:'number',min:.01,max:.99,step:.01});this.sampleFields(adv,d);
+  const go=button('Sviluppa questo',()=>this.queue('develop'),'dg-primary');go.dataset.queue='';body.append(go);this.live(body);
+  const grid=el('div','','dg-gallery');body.append(grid);
+  for(const item of (this.data.developments||[]).filter(x=>x.candidate===p.id)){
+   const card=this.section(grid,item.label);card.append(film(item.video),el('p',`${item.width} × ${item.height} · ${item.mode==='guided'?'Continuazione':'Rigenerazione'} · seed ${item.seed}`),el('p',item.saved_path||''));
+   card.append(button('Usa questo sviluppo → Finalizza',()=>{this.config.selected_development=item.id;this.save();this.page='finish';this.render();},'dg-primary'));
+  }
+ }
+ finish(body){
+  const p=this.data.developments?.find(x=>x.id===this.config.selected_development&&x.candidate===this.config.selected);
+  if(!p){body.append(el('p','Scegli uno sviluppo di qualità nella sezione Sviluppa.'));return;}
   const selected=this.section(body,p.label+' · selezionato');selected.append(film(p.video),el('p','Prompt, seed, sorgenti, modello e LoRA sono ripresi automaticamente da questo provino.'));
   const f=this.config.finish;const s=this.section(body,'Come vuoi finalizzare?');
   const task=p.config?.task||this.config.task;
-  this.field(s,'Passaggi',f,'stages',{options:[['both','Completo · latent upscale + Ultimate'],['latent','Solo latent upscale e raffinamento'],['ultimate','Solo Ultimate dal provino']],change:()=>this.render()});
+  this.field(s,'Passaggi',f,'stages',{options:[['both','Completo · latent upscale + Ultimate'],['latent','Solo latent upscale e raffinamento'],['ultimate','Solo Ultimate dallo sviluppo']],change:()=>this.render()});
   this.field(s,'Risoluzione finale · lato lungo',f,'resolution',{options:[['1k','1K · 1024 px'],['2k','2K · 2048 px'],['3k','3K · 3072 px'],['4k','4K · 4096 px']],change:()=>this.render()});
   const edge={ '1k':1024,'2k':2048,'3k':3072,'4k':4096 }[f.resolution];
   s.append(el('p',`Uscita: ${Math.max(32,Math.round(p.width/Math.max(p.width,p.height)*edge/32)*32)} × ${Math.max(32,Math.round(p.height/Math.max(p.width,p.height)*edge/32)*32)} px. Proporzioni del provino, allineate a 32 px. Completo usa un passaggio latente fino a ×2 e Ultimate alla risoluzione scelta.`));
@@ -378,7 +397,10 @@ export class DirectorStudio {
   }
   const d=el('details','','dg-card');d.append(el('summary','Controlli finalizzazione'));body.append(d);this.presetMenu(d,'finish',task);this.sampleFields(d,f);
   this.field(d,'Modello latent upscale',f,'upscaler',{options:this.catalog.upscalers});this.field(d,'Sigma del raffinamento · vuoto usa scheduler',f,'sigmas');this.field(d,'Denoise raffinamento · solo senza sigma manuali',f,'denoise',{type:'number',step:.01,min:0,max:1});
-  this.field(d,'Checkpoint FL2V per Ultimate',f,'ultimate_model',{options:this.catalog.models});this.field(d,'Turbo FL2V per Ultimate',f,'ultimate_turbo',{options:['',...this.catalog.loras]});this.field(d,'Potenza Turbo Ultimate',f,'ultimate_strength',{type:'number',step:.01});
+  this.field(d,'Sampler Ultimate',f,'ultimate_sampler',{options:this.catalog.samplers});
+  this.field(d,'Seed raffinamento',f,'refine_seed',{type:'number',step:1});
+  this.field(d,'Seed Ultimate',f,'ultimate_seed',{type:'number',step:1});
+  this.field(d,'Checkpoint per Ultimate',f,'ultimate_model',{options:this.catalog.models});this.field(d,'Turbo FL2V per Ultimate',f,'ultimate_turbo',{options:['',...this.catalog.loras]});this.field(d,'Potenza Turbo Ultimate',f,'ultimate_strength',{type:'number',step:.01});
   for(const [k,label,step]of[['tile_width','Larghezza tasselli',32],['tile_height','Altezza tasselli',32],['tile_padding','Contesto tasselli',8],['mask_blur','Sfumatura tasselli',1],['ultimate_steps','Step Ultimate',1],['ultimate_denoise','Denoise Ultimate',.01]])this.field(d,label,f,k,{type:'number',step});
   this.field(d,'RIFE · batch (1 riduce la memoria)',this.config.rife,'batch_size',{type:'number',min:1,max:32,step:1});
   const go=button('Finalizza questo',()=>this.queue('finish'),'dg-primary');go.dataset.queue='';body.append(go,button('Torna ai provini',()=>{this.page='choose';this.render();}));this.live(body);
