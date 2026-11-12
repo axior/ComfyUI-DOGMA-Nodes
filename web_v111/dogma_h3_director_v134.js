@@ -1,11 +1,11 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-43';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-45';
 
-import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-43';
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-45';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-43',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-45',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -177,10 +177,11 @@ export class DirectorStudio {
  }
  armSound(){if(this.config.sound){try{this.audio ||= new(window.AudioContext||window.webkitAudioContext)();this.audio.resume();}catch{}}}
  applyState(d){
-  const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length||this.data.edit_trials?.length!==d.edit_trials?.length;
-  if((d.edit_trials?.length||0)>(this.data.edit_trials?.length||0)){this.editTrialId=d.edit_trials.at(-1).id;this.editComparePosition=null;}
+  const change=this.data.status!==d.status||this.data.edit_batch?.phase!==d.edit_batch?.phase||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length||this.data.edit_trials?.length!==d.edit_trials?.length;
+  if((d.edit_trials?.length||0)>(this.data.edit_trials?.length||0)&&!d.edit_trials.some(x=>x.id===this.editTrialId)){this.editTrialId=d.edit_trials.at(-1).id;this.editComparePosition=null;}
   if((d.edits?.length||0)>(this.data.edits?.length||0)){this.editResultId=d.edits.at(-1).id;this.editComparePosition=null;}
   this.data=d;
+  if(this.promotedTrial&&d.edit_batch?.phase==='finish')this.page='finish';
   if(['ready','developed','done','error'].includes(d.status)){this.pending=false;d.progress=null;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
   if(change&&this.page!=='prepare')this.render();else this.status();
  }
@@ -197,6 +198,7 @@ export class DirectorStudio {
    }else if(!owned)this.pending=false;
    if(owned&&d.status==='running'&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
    if(render||JSON.stringify(d)!==JSON.stringify(this.data))this.applyState(d);else this.status();
+   if(this.editFinishWaiting&&!jobs.length&&!this.submitting){const id=this.editFinishWaiting;this.editFinishWaiting=null;this.config.edit.selected_trial=id;this.pending=false;this.queue('finish');}
   }catch(e){if(epoch===this.epoch&&e.name!=='AbortError'){this.data.message='Stato non disponibile: '+e.message;this.status();}}
   finally{if(epoch===this.epoch)this.recovering=false;}
  }
@@ -204,6 +206,10 @@ export class DirectorStudio {
  status(){
   const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||(this.config?.task==='edit'?'Seleziona un tratto, prepara la maschera se serve e genera i provini edit.':'Prepara il lavoro, genera i provini e scegli quale continuare.');s.dataset.state=this.data.status;}
   this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting||this.uploads>0);
+  this.dialog?.querySelectorAll('[data-edit-finish]').forEach(b=>{
+   b.disabled=this.promoting||this.submitting||this.uploads>0||!!this.editFinishWaiting||this.pending&&this.data.edit_batch?.phase==='finish';
+   b.textContent=this.pending&&this.data.edit_batch?.phase!=='finish'?'Usa questo provino e salta gli altri':'Rigenera questo provino alla dimensione originale';
+  });
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
   // Always allow a fresh queue check: UI state can lag behind a failed job.
@@ -215,7 +221,7 @@ export class DirectorStudio {
    if(this.config.task!=='edit'&&action!=='draft'&&!this.config.selected)throw new Error('Scegli prima un provino.');
    if(action==='draft'&&this.config.task==='edit'){
     if(!this.config.edit.source||!this.editMeta)throw new Error('Carica un video e attendi la timeline.');
-    if(!this.editTimeline?.commitInputs())throw new Error('Controlla i tempi della selezione.');
+    if(!this.editTimeline?.commitInputs())throw new Error(this.editTimeline?.inputError||'Attendi la preparazione della timeline.');
     if((this.editTimeline.video?.readyState||0)<2)throw new Error('Attendi l’anteprima video o ricaricala prima di applicare l’edit.');
     if(this.config.exploration==='seeds'&&!this.config.prompt.trim())throw new Error('Descrivi la modifica da applicare.');
     if(this.config.exploration==='prompts'&&this.config.variants.some(v=>!v.text.trim()))throw new Error('Completa o rimuovi le varianti prompt vuote.');
@@ -238,12 +244,14 @@ export class DirectorStudio {
    const required=[];
    if(executionConfig.task==='edit'&&executionConfig.edit.mask?.enabled)required.push('MVEx_MaskToLatentSpace');
    if(action==='develop'&&this.config.develop.mode==='guided')required.push('MinimaxH3LatentUpscaler3D');
-   if(executionConfig.preview.enabled)required.push('ModelPreviewOverrideKJ');
+   const previewEnabled=executionConfig.preview.enabled&&!(this.config.task==='edit'&&action==='draft'&&!executionConfig.edit.trial_live_preview);
+   if(previewEnabled)required.push('ModelPreviewOverrideKJ');
    if(action==='finish'&&this.config.task!=='edit'&&this.config.finish.stages!=='ultimate')required.push('MinimaxH3LatentUpscaler3D');
    if(action==='finish'&&this.config.task!=='edit'&&this.config.finish.stages!=='latent')required.push('UltimateSDUpscaleNoUpscaleGuider');
    const missing=required.filter(n=>!this.catalog.nodes.includes(n));if(missing.length)throw new Error('Installa dal Manager i nodi richiesti: '+missing.join(', '));
    const q=await this.request('/queue');if(q.queue_running?.length||q.queue_pending?.length)throw new Error('Comfy sta già lavorando. Attendi la fine della coda.');
    this.config.action=action;this.config.nonce++;this.save();
+   if(this.config.task==='edit'&&action==='draft'){delete this.data.edit_batch;this.promotedTrial=null;this.editFinishWaiting=null;}
    this.previewData=null;this.previewVideo=false;
    this.pending=true;this.data.status='running';this.data.progress=null;this.data.message='Invio a Comfy…';this.status();
    const graph=await app.graphToPrompt();
@@ -252,6 +260,27 @@ export class DirectorStudio {
    if(!result?.prompt_id)throw new Error('Comfy non ha restituito un identificativo di esecuzione.');
    this.promptId=result.prompt_id;this.page=action==='draft'?'choose':action==='develop'?'develop':'finish';this.data.message='In coda · attendo il motore';this.render();
   }catch(e){if(e.name!=='AbortError'){const detail=e.response?.node_errors||e.response?.error;this.fail(detail?JSON.stringify(detail,null,2):e.message);}}finally{this.submitting=false;this.status();}
+ }
+ async useEditTrial(id){
+  if(this.promoting||this.editFinishWaiting||this.submitting||this.uploads>0)return;
+  const selected=this.data.edit_trials?.find(x=>x.id===id&&x.complete);if(!selected)return;
+  this.config.edit.selected_trial=id;this.save();
+  if(!this.pending){await this.queue('finish');return;}
+  this.promoting=true;this.status();
+  try{
+   const result=await this.request('/dogma/h3/v2/edit/promote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,trial:id,batch:this.data.edit_batch?.id})});
+   this.promotedTrial=id;
+   if(result.status==='accepted'){
+    this.data.edit_batch=result.batch;this.page='finish';this.data.message='Provino scelto · salto gli altri e passo alla dimensione originale';this.render();
+   }else{
+    this.editFinishWaiting=id;this.data.message='Provino scelto · attendo la chiusura del gruppo e avvio la rigenerazione';
+    const q=await this.request('/queue');const own=x=>x[1]===this.promptId;
+    const pending=(q.queue_pending||[]).filter(own).map(x=>x[1]);
+    if(pending.length)await this.request('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete:pending})});
+    this.page='finish';this.render();await this.recover(false);
+   }
+  }catch(e){if(e.name!=='AbortError'){this.data.message='Scelta del provino non riuscita: '+e.message;this.status();}}
+  finally{this.promoting=false;this.status();}
  }
  async stop(){
   if(this.stopping)return;this.stopping=true;this.status();

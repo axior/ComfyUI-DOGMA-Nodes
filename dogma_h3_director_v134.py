@@ -372,10 +372,11 @@ class DOGMAH3DirectorEngineV2:
         import torch
         from .dogma_h3_director_v133 import pack,unpack
         c=parse_config(sessione); root=manifest_root(c['session']); root.mkdir(parents=True,exist_ok=True)
-        st=state(c['session']); st['engine']=str(unique_id); st['session']=c['session']
+        st=state(c['session']); st['engine']=str(unique_id); st['session']=c['session'];st['action']=c['action']
         def update(status,message,**extra):
             from server import PromptServer
-            st.update(status=status,message=message,action=c['action'],progress=None,**extra)
+            values=dict(status=status,message=message,action=st.get('action',c['action']),progress=None)
+            values.update(extra);st.update(values)
             write_json(root/'session.json',st)
             PromptServer.instance.send_sync('dogma.h3.v2',st)
         def progress(step,total):

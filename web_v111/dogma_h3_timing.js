@@ -22,3 +22,15 @@ export function parseSeconds(value){
  const s=value.trim().replace(',','.');
  return /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(s)?Number(s):NaN;
 }
+export function parseSelection(startValue,endValue,meta){
+ let start=parseSeconds(startValue),end=parseSeconds(endValue);
+ if(!Number.isFinite(start)||!Number.isFinite(end))throw new Error('Inserisci i secondi usando punto o virgola.');
+ // The inputs display six decimals; accept their half-unit rounding at EOF.
+ const tolerance=.5e-6+Number.EPSILON*Math.max(1,meta.duration)*8;
+ if(start<0||end>meta.duration+tolerance)throw new Error('I tempi devono essere compresi nel video.');
+ start=Math.max(0,Math.min(meta.duration,start));end=Math.max(0,Math.min(meta.duration,end));
+ if(start>=end)throw new Error('L’inizio deve precedere la fine. Completa entrambi i tempi.');
+ const selection=snapSelection(start,end,meta);
+ if(selection.end-selection.start>meta.generation_frames.at(-1)/24+1e-8)throw new Error('La selezione supera la durata disponibile con queste reference.');
+ return selection;
+}

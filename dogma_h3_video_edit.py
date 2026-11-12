@@ -12,7 +12,10 @@ import time
 from fractions import Fraction
 from bisect import bisect_left
 import copy
+import json
+from functools import lru_cache
 from .dogma_h3_edit_mask import mask_defaults, mask_settings, validate_alignment, write_segment, register_mask_routes, prepare_masked_latent
+from .dogma_h3_edit_control import begin_batch, PromoteEdit, register_promotion_route
 
 # Native H3 temporal grid; the selected interval is independent of this grid.
 # 362/24 exceeds the 15 s reference budget; keep the source reference <=15 s.
@@ -21,7 +24,7 @@ EDIT_FRAMES = tuple(range(5, 346, 17))
 
 def edit_defaults():
     return dict(source='', start=0., end=107/24, fade=.125, anchor_edges=True,
-                mask=mask_defaults(), selected_trial='', trial_edge=512,
+                mask=mask_defaults(), selected_trial='', trial_edge=512, trial_mode='fast', trial_live_preview=False,
                 turbo='', turbo_strength=1., steps=20, sampler='res_multistep',
                 scheduler='simple', shift_video=12., shift_audio=3.,
                 lying=0., lying_start=.1, lying_end=.9)
@@ -120,16 +123,36 @@ def plan_interval(meta, start, end):
 
 
 
+@lru_cache(maxsize=64)
+def _cached_probe(path,size,mtime):
+    return probe(Path(path))
+
+def cached_probe(path):
+    path=Path(path);stat=path.stat()
+    return _cached_probe(str(path.resolve()),stat.st_size,stat.st_mtime_ns)
+
+def trial_sampling(c):
+    settings=copy.deepcopy(c['edit'])
+    mode=settings.get('trial_mode','fast')
+    if mode=='same':return settings
+    if mode!='fast':raise ValueError('Modalità provini edit non valida.')
+    import folder_paths
+    name='minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors'
+    turbo=next((p for p in folder_paths.get_filename_list('loras') if p.replace('\\','/').split('/')[-1]==name),None)
+    if turbo is None:raise ValueError('Provini rapidi: Turbo Ref2Video 4 step non trovato. Seleziona "Stessa qualità del finale" oppure configura questa LoRA.')
+    settings.update(turbo=turbo,turbo_strength=1.,steps=4,sampler='euler',scheduler='simple',lying=0.)
+    return settings
+
 def check_config(c, input_file):
     e = c['edit']
     if not e.get('source'):
         raise ValueError('Carica il video da modificare.')
-    meta = probe(input_file(e['source']))
+    meta = cached_probe(input_file(e['source']))
     plan = plan_interval(meta,e['start'],e['end'])
     settings = mask_settings(e.get('mask'))
     if settings['enabled']:
         if not settings['source']: raise ValueError('Carica il video maschera bianco e nero.')
-        validate_alignment(meta,probe(input_file(settings['source'])))
+        validate_alignment(meta,cached_probe(input_file(settings['source'])))
         import nodes
         if 'MVEx_MaskToLatentSpace' not in nodes.NODE_CLASS_MAPPINGS:
             raise ValueError('Installa o aggiorna MaskVidExperiments dal Manager per usare la maschera H3.')
@@ -150,7 +173,7 @@ def check_config(c, input_file):
             raise ValueError('Carica o rimuovi le reference vuote.')
         path = input_file(r['name'])
         if r['kind']=='video':
-            ref = probe(path)
+            ref = cached_probe(path)
             if not 2 <= ref['duration'] <= 15:
                 raise ValueError('Ogni video reference aggiuntivo deve durare da 2 a 15 secondi.')
             plan['generation_frames'] = max(plan['generation_frames'], max(5,math.floor((ref['duration']*24-5)/17)*17+5))
@@ -159,6 +182,7 @@ def check_config(c, input_file):
     if duration>15+1e-6:
         raise ValueError(f'Sorgente selezionato + video reference: {duration:.2f} s. Il limite H3 è 15 s totali; accorcia la selezione o le reference.')
     ffmpeg()  # Fail before loading models.
+    if int(e.get('trial_edge',512)) not in (256,384,512):raise ValueError('Dimensione provini edit: 256, 384 o 512 px.')
     return meta,plan
 
 
@@ -274,57 +298,87 @@ def compose(source,patch,dest,meta,plan,fade,interrupt=lambda:None):
     return {'audio_copied':copy_audio,'fps':meta['fps'],'width':meta['width'],'height':meta['height']}
 
 
-def render_edit(c,root,st,update,progress,uid,trial=False,resources=None):
+def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepared=None,checkpoint=lambda:None,sampling=None):
     from . import dogma_h3_director_v134 as director
     import comfy.model_management as mm
     from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo,MiniMaxH3AddGuide
     import uuid
     import re
+    started=time.monotonic();timings={}
+    def interrupt():
+        mm.throw_exception_if_processing_interrupted();checkpoint()
+    def report(step,total):
+        interrupt();progress(step,total)
+    interrupt()
     meta,plan=check_config(c,director.input_file)
     source=director.input_file(c['edit']['source'])
     scale=min(1.,int(c['edit'].get('trial_edge',512))/max(meta['width'],meta['height'])) if trial else 1.
     content_width=max(2,round(meta['width']*scale/2)*2);content_height=max(2,round(meta['height']*scale/2)*2)
     width=math.ceil(content_width/32)*32; height=math.ceil(content_height/32)*32
     n=plan['generation_frames']
-    update('running','Lettura della sola selezione…',active='edit')
-    selected=segment_tensor(source,plan['start'],n,width,height,mm.throw_exception_if_processing_interrupted,
-                            end=plan['end'],source_fps=meta['fps'],last_time=plan['last_source_time'],resize_size=(content_width,content_height) if trial else None)
-    images={};videos={'ref_video_1':selected}
-    for r in c['refs']:
-        if r['kind']=='image':images[f'ref_image_{len(images)+1}']=director.load_image(r['name'])
-        else:
-            p=director.input_file(r['name']);m=probe(p)
-            rn=max(5,math.floor((m['duration']*24-5)/17)*17+5)
-            # Native H3 truncates refs to output length. Fail rather than silently
-            # ignore requested reference content.
-            if rn>n: raise ValueError('Un video reference è più lungo del tratto editato: accorcialo prima di caricarlo.')
-            videos[f'ref_video_{len(videos)+1}']=segment_tensor(p,0,rn,math.ceil(m['width']/32)*32,math.ceil(m['height']/32)*32,mm.throw_exception_if_processing_interrupted)
-    update('running',f'Video Edit · {content_width} × {content_height} · caricamento Ref2VA')
     res=resources if resources is not None else director.load_resources(c)
     prompt=('integrated_multimodal_description:\n[Shot 1]\n'
             'The target video is an edited version of <Video 1>. Preserve its shot, camera, '
             'timing, motion and all elements not explicitly requested to change. '
             'Keep the beginning and ending visually continuous with the source. '
             'Apply only the following edit, using additional references as specified:\n'+c['prompt'].strip())
-    cond,latent=MiniMaxH3ReferenceToVideo.execute(res['clip'],prompt,width,height,n,'match',
-        vae=res['vae'],audio_vae=res['audio'],ref_images=images,ref_videos=videos)
     settings=mask_settings(c['edit'].get('mask'))
-    if settings['enabled']:
-        update('running','Codifica del sorgente e maschera nativa H3')
-        latent=prepare_masked_latent(director,latent,res['vae'],selected,director.input_file(settings['source']),settings,plan,
-                                     (content_width,content_height),mm.throw_exception_if_processing_interrupted)
-    if c['edit']['anchor_edges'] and not settings['enabled']:
-        cond=MiniMaxH3AddGuide.execute(cond,latent,0,vae=res['vae'],image=selected[:1])[0]
-        cond=MiniMaxH3AddGuide.execute(cond,latent,-1,vae=res['vae'],image=selected[-1:])[0]
-    model=director.prepare_model(res,c,{'loras':c['common_loras']},'edit',uid)
-    update('running','Video Edit · generazione del tratto selezionato')
-    result=director.sample(model,cond,latent,{**c['edit'],'lock_audio':False},int(c['seed']),progress=progress)
+    key=json.dumps([str(source),plan,width,height,prompt,c['refs'],settings,c['edit']['anchor_edges']],sort_keys=True)
+    reused=prepared is not None and prepared.get('key')==key
+    if reused:
+        cond,latent=prepared['cond'],prepared['latent']
+        update('running','Provino · riuso di video, prompt e maschera già preparati',active='edit')
+    else:
+        if prepared is not None:prepared.clear()
+        update('running','Lettura della sola selezione…',active='edit')
+        selected=segment_tensor(source,plan['start'],n,width,height,interrupt,
+                                end=plan['end'],source_fps=meta['fps'],last_time=plan['last_source_time'],resize_size=(content_width,content_height) if trial else None)
+        images={};videos={'ref_video_1':selected}
+        for r in c['refs']:
+            if r['kind']=='image':
+                image=director.load_image(r['name'])
+                if trial and max(image.shape[1:3])>int(c['edit']['trial_edge']):
+                    import torch.nn.functional as F
+                    ratio=int(c['edit']['trial_edge'])/max(image.shape[1:3])
+                    size=tuple(max(32,round(d*ratio/32)*32) for d in image.shape[1:3])
+                    image=F.interpolate(image.movedim(-1,1),size=size,mode='area').movedim(1,-1)
+                images[f'ref_image_{len(images)+1}']=image
+            else:
+                p=director.input_file(r['name']);m=cached_probe(p)
+                rn=max(5,math.floor((m['duration']*24-5)/17)*17+5)
+                if rn>n:raise ValueError('Un video reference è più lungo del tratto editato: accorcialo prima di caricarlo.')
+                ratio=min(1.,int(c['edit']['trial_edge'])/max(m['width'],m['height'])) if trial else 1.
+                rw,rh=(max(32,round(m[k]*ratio/32)*32) if trial else math.ceil(m[k]/32)*32 for k in ('width','height'))
+                videos[f'ref_video_{len(videos)+1}']=segment_tensor(p,0,rn,rw,rh,interrupt,resize_size=(rw,rh) if trial else None)
+        interrupt();update('running',f'Video Edit · {content_width} × {content_height} · preparazione Ref2VA')
+        cond,latent=MiniMaxH3ReferenceToVideo.execute(res['clip'],prompt,width,height,n,'match',
+            vae=res['vae'],audio_vae=res['audio'],ref_images=images,ref_videos=videos)
+        interrupt()
+        if settings['enabled']:
+            update('running','Codifica del sorgente e maschera nativa H3')
+            latent=prepare_masked_latent(director,latent,res['vae'],selected,director.input_file(settings['source']),settings,plan,
+                                         (content_width,content_height),interrupt)
+        if c['edit']['anchor_edges'] and not settings['enabled']:
+            cond=MiniMaxH3AddGuide.execute(cond,latent,0,vae=res['vae'],image=selected[:1])[0]
+            cond=MiniMaxH3AddGuide.execute(cond,latent,-1,vae=res['vae'],image=selected[-1:])[0]
+        del selected,images,videos
+        if prepared is not None:prepared.update(key=key,cond=cond,latent=latent)
+    interrupt();timings['prepare']=round(time.monotonic()-started,2)
+    effective=copy.deepcopy(sampling if sampling is not None else (trial_sampling(c) if trial else c['edit']))
+    model_config=copy.deepcopy(c);model_config['edit']=effective
+    if trial:model_config['preview']['enabled']=bool(c['edit'].get('trial_live_preview',False))
+    model=director.prepare_model(res,model_config,{'loras':c['common_loras']},'edit',uid)
+    phase='Provino edit' if trial else 'Video Edit'
+    update('running',f'{phase} · {content_width} × {content_height} · {effective["steps"]} passaggi')
+    sampled=time.monotonic()
+    result=director.sample(model,cond,latent,{**effective,'lock_audio':False},int(c['seed']),progress=report)
+    interrupt();timings['sample']=round(time.monotonic()-sampled,2);decoded=time.monotonic()
+    update('running',phase+' · decodifica')
     output,_=director.decode(res,result,False)
+    interrupt();timings['decode']=round(time.monotonic()-decoded,2);exported=time.monotonic()
     folder=root/'edits'/uuid.uuid4().hex;folder.mkdir(parents=True)
     patch=folder/'segment.mkv'
     update('running','Video Edit · rimozione bordi tecnici e raccordo')
-    save_patch(output,patch,content_width,content_height,n,mm.throw_exception_if_processing_interrupted)
-    del result,output,selected,images,videos,cond,latent,model,res
     job=re.sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA'
     settings=mask_settings(c['edit'].get('mask'))
     mask_path=director.input_file(settings['source']) if settings['enabled'] else None
@@ -332,21 +386,25 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None):
     final=folder/(job+('_H3_EDIT_TRIAL.mp4' if trial else '_H3_VIDEO_EDIT.mp4'))
     update('running','Composizione del provino' if trial else 'Ricostruzione del video completo · audio originale')
     try:
+        save_patch(output,patch,content_width,content_height,n,interrupt)
+        del result,output,cond,latent,model,res
         if mask_path or trial:
             write_segment(source,patch,mixed,meta,plan,mask_path=mask_path,settings=settings,
                           size=(content_width,content_height),fade=c['edit']['fade'],
-                          interrupt=mm.throw_exception_if_processing_interrupted)
+                          interrupt=interrupt)
         if trial:
-            encode_trial(mixed,final,plan['duration'],mm.throw_exception_if_processing_interrupted)
+            encode_trial(mixed,final,plan['duration'],interrupt)
             info=dict(audio_copied=False,fps=meta['fps'],width=content_width,height=content_height)
         else:
-            info=compose(source,mixed if mask_path else patch,final,meta,plan,0 if mask_path else c['edit']['fade'],mm.throw_exception_if_processing_interrupted)
+            info=compose(source,mixed if mask_path else patch,final,meta,plan,0 if mask_path else c['edit']['fade'],interrupt)
     finally:
         patch.unlink(missing_ok=True);mixed.unlink(missing_ok=True)
+    timings['export']=round(time.monotonic()-exported,2)
     return dict(id=uuid.uuid4().hex,label='Provino edit' if trial else 'Video completo · edit applicato',video=director.view_file(final),
                 saved_path=str(final.resolve()) if trial else director.export_file(final,c),complete=True,kind='edit_trial' if trial else 'edit',
                 selection=plan,duration=plan['duration'] if trial else meta['duration'],config=copy.deepcopy(c),
-                segment_only=trial,prompt=c['prompt'],seed=int(c['seed']),**info)
+                segment_only=trial,prompt=c['prompt'],seed=int(c['seed']),sampling={k:effective[k] for k in ('steps','sampler','turbo')},
+                elapsed_seconds=round(time.monotonic()-started,2),timings=timings,prepared_reused=reused,**info)
 
 
 def encode_trial(source,dest,duration,interrupt):
@@ -366,6 +424,17 @@ def encode_trial(source,dest,duration,interrupt):
 
 def run_edit(c,root,st,update,progress,uid):
     from . import dogma_h3_director_v134 as director
+    def finish(trial_id,resources=None,batch=None):
+        selected=next((x for x in st.get('edit_trials',[]) if x['id']==trial_id),None)
+        if selected is None:raise ValueError('Scegli prima un provino edit.')
+        config=copy.deepcopy(selected['config']);config['action']='finish';config['output_dir']=c['output_dir'];config['job']=c['job']
+        if config.get('models')!=c.get('models'):resources=None
+        if batch:st['edit_batch']=batch.snapshot()
+        update('running','Provino scelto · rigenerazione alla dimensione originale',action='finish',active='edit')
+        item=render_edit(config,root,st,update,progress,uid,trial=False,resources=resources)
+        item['trial']=selected['id'];st.setdefault('edits',[]).append(item)
+        if batch:batch.phase='done';st['edit_batch']=batch.snapshot()
+        update('done','Video completo pronto. Edit e maschera applicati alla dimensione originale.',action='finish',active=None)
     if c['action']=='draft':
         trials=director.make_plan(c)
         # Validate all trials before loading a model or erasing a previous result.
@@ -373,21 +442,31 @@ def run_edit(c,root,st,update,progress,uid):
         for trial in trials:
             config=copy.deepcopy(c);config['prompt']=trial['prompt'];config['seed']=trial['seed'];config['common_loras']=trial['loras']
             check_config(config,director.input_file);configs.append(config)
-        resources=director.load_resources(configs[0])
-        for i,config in enumerate(configs):
-            update('running',f'Provino edit {i+1}/{len(configs)} · 512 px')
-            item=render_edit(config,root,st,update,progress,uid,trial=True,resources=resources)
-            item['label']=f'Provino edit {len(st.get("edit_trials",[]))+1}'
-            st.setdefault('edit_trials',[]).append(item)
-            update('running',f'Provino edit {i+1}/{len(configs)} pronto',active=None)
-        update('ready','Provini edit pronti. Scegli quale rigenerare alla dimensione originale.',active=None)
+        sampling=trial_sampling(c)
+        batch=begin_batch(c['session'],len(configs),(x['id'] for x in st.get('edit_trials',[]) if x.get('complete')))
+        prepared={};resources=None
+        try:
+            st['edit_batch']=batch.snapshot();update('running','Provini edit · caricamento condiviso del modello')
+            try:
+                batch.checkpoint();resources=director.load_resources(configs[0])
+                for i,config in enumerate(configs):
+                    batch.checkpoint();batch.current=i+1;st['edit_batch']=batch.snapshot()
+                    update('running',f'Provino edit {i+1}/{len(configs)} · {config["edit"].get("trial_edge",512)} px · {sampling["steps"]} passaggi')
+                    item=render_edit(config,root,st,update,progress,uid,trial=True,resources=resources,prepared=prepared,
+                                     checkpoint=batch.checkpoint,sampling=sampling)
+                    item['label']=f'Provino edit {len(st.get("edit_trials",[]))+1}'
+                    st.setdefault('edit_trials',[]).append(item);batch.add(item['id']);st['edit_batch']=batch.snapshot()
+                    update('running',f'Provino edit {i+1}/{len(configs)} pronto',active=None)
+            except PromoteEdit:
+                pass  # Only this session's unfinished draft is abandoned.
+            chosen=batch.seal();prepared.clear();st['edit_batch']=batch.snapshot()
+            if chosen:
+                finish(chosen,resources,batch)
+            else:update('ready','Provini edit pronti. Scegli quale rigenerare alla dimensione originale.',active=None)
+        finally:
+            prepared.clear();batch.close()
     else:
-        selected=next((x for x in st.get('edit_trials',[]) if x['id']==c['edit'].get('selected_trial')),None)
-        if selected is None: raise ValueError('Scegli prima un provino edit.')
-        config=copy.deepcopy(selected['config']);config['action']='finish';config['output_dir']=c['output_dir'];config['job']=c['job']
-        item=render_edit(config,root,st,update,progress,uid,trial=False)
-        item['trial']=selected['id'];st.setdefault('edits',[]).append(item)
-        update('done','Video completo pronto. Edit e maschera applicati alla dimensione originale.',active=None)
+        finish(c['edit'].get('selected_trial'))
 
 
 
@@ -397,6 +476,7 @@ def register_edit_routes(routes,input_file):
     from functools import lru_cache
     slots=asyncio.Semaphore(3)
     cleanup=register_mask_routes(routes,input_file,probe,plan_interval)
+    register_promotion_route(routes)
 
     @lru_cache(maxsize=128)
     def metadata_cached(path,size,mtime):
