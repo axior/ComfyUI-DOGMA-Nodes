@@ -14,13 +14,14 @@ import shutil
 
 _STATE_LOCK=threading.RLock()
 from pathlib import Path
+from .dogma_h3_video_edit import edit_defaults, run_edit
 
 
 def defaults():
     return dict(version=2, session=str(uuid.uuid4()), action="draft", selected="", nonce=0,
         generate_audio=True, output_dir="", job="DOGMA", task="i2v", exploration="seeds", count=2, seed=64,
         prompt="", variants=[{"text":"", "loras":[]}], trial_loras={},
-        first="", last="", refs=[], common_loras=[], seconds=5,
+        first="", last="", refs=[], common_loras=[], seconds=5, edit=edit_defaults(),
         auto_aspect=True, long_edge=512, width=512, height=288, sound=True,
         models={"i2v":"minimax_h3_fl2va_pruned_int8_convrot.safetensors",
                 "t2v":"minimax_h3_fl2va_pruned_int8_convrot.safetensors", "ref2v":"minimax_h3_ref2va_pruned_int8_convrot.safetensors", "clip":"qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
@@ -62,7 +63,8 @@ def parse_config(raw):
         raise ValueError('Risoluzione: scegli 1K, 2K, 3K o 4K.')
     c['session']=str(uuid.UUID(c['session']))
     if c['action'] not in ('draft','develop','finish'): raise ValueError('Azione non valida.')
-    if c['task'] not in ('i2v','t2v','ref2v'): raise ValueError('Scegli I2V, T2V o Ref2Video.')
+    if c['task'] not in ('i2v','t2v','ref2v','edit'): raise ValueError('Scegli I2V, T2V, Ref2Video o Video Edit.')
+    if c['task']=='edit' and c['action']!='draft': raise ValueError('Video Edit usa solo Applica edit, senza sviluppo o upscale.')
     if c['exploration'] not in ('seeds','prompts'): raise ValueError('Modalità provini non valida.')
     if not 1<=int(c['count'])<=10: raise ValueError('Scegli da 1 a 10 provini.')
     if not 0.2<=float(c['seconds'])<=15: raise ValueError('Durata: da 0,2 a 15 secondi.')
@@ -238,7 +240,7 @@ def condition(c,a,res,prompt,w,h,n):
 
 def load_resources(c):
     import nodes
-    m=c['models']; name=m[c['task']]
+    m=c['models']; name=m['ref2v' if c['task']=='edit' else c['task']]
     if not name: raise ValueError(f'Seleziona il modello {c["task"]} nelle impostazioni avanzate.')
     return {'model':nodes.UNETLoader().load_unet(name,'default')[0],
             'clip':nodes.CLIPLoader().load_clip(m['clip'],'minimax','default')[0],
@@ -382,7 +384,9 @@ class DOGMAH3DirectorEngineV2:
             PromptServer.instance.send_sync('dogma.h3.v2.progress',{'session':c['session'],'engine':str(unique_id),'step':step,'total':total})
         try:
             update('running','Preparazione risorse…')
-            if c['action']=='draft':
+            if c['task']=='edit':
+                run_edit(c,root,st,update,progress,unique_id)
+            elif c['action']=='draft':
                 plan=make_plan(c); a=assets(c)
                 first=next((x for x in [a['first'],a['last'],*a['images'].values(),*a['videos'].values()] if x is not None),None)
                 w,h=dimensions(c,(first.shape[2],first.shape[1]) if first is not None else None)
@@ -571,6 +575,8 @@ def register_routes():
     from aiohttp import web
     import folder_paths, comfy.samplers, nodes
     routes=PromptServer.instance.routes
+    from .dogma_h3_video_edit import register_edit_routes
+    register_edit_routes(routes,input_file)
     def local_request(request):
         from urllib.parse import urlparse
         if request.remote not in ('127.0.0.1','::1'):

@@ -1,8 +1,9 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
+import { renderEditor, renderEditResults } from './dogma_h3_video_edit.js?v=video-edit-1';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=1.0.39',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=video-edit-1',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -38,7 +39,7 @@ export class DirectorStudio {
   this.config=merge(clone(this.catalog.defaults),stored);
   this.config.session ||= crypto.randomUUID();
  }
- family(task){return task==='ref2v'?'ref2v':'fl2v';}
+ family(task){return ['ref2v','edit'].includes(task)?'ref2v':'fl2v';}
  turbo(task,steps){
   const name=this.family(task)==='ref2v'?'minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors':`minimax_h3_fl2v_turbo_${steps}step_v1.0${steps===4?'_768p':''}_comfyui_bf16.safetensors`;
   return this.catalog.loras.find(x=>x.replaceAll('\\','/').split('/').pop()===name)||name;
@@ -94,7 +95,7 @@ export class DirectorStudio {
  }
  async request(path,opts={}){
   const controller=new AbortController(),epoch=this.epoch;this.requests.add(controller);let expired=false;
-  const timeout=setTimeout(()=>{expired=true;controller.abort();},20000);
+  const timeout=opts.body instanceof FormData?null:setTimeout(()=>{expired=true;controller.abort();},20000);
   try{
    const r=await api.fetchApi(path,{...opts,signal:controller.signal});
    if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);
@@ -132,6 +133,7 @@ export class DirectorStudio {
   }
  }
  close(){
+  this.editTimeline?.destroy();this.editTimeline=null;
   ++this.epoch;clearInterval(this.poll);this.recovering=false;
   for(const c of this.requests)c.abort();this.requests.clear();
   const dialog=this.dialog;this.dialog=null;this.folderPanel=null;if(active===this)active=null;
@@ -174,7 +176,7 @@ export class DirectorStudio {
  }
  armSound(){if(this.config.sound){try{this.audio ||= new(window.AudioContext||window.webkitAudioContext)();this.audio.resume();}catch{}}}
  applyState(d){
-  const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length;
+  const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length;
   this.data=d;
   if(['ready','developed','done','error'].includes(d.status)){this.pending=false;d.progress=null;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
   if(change&&this.page!=='prepare')this.render();else this.status();
@@ -197,7 +199,7 @@ export class DirectorStudio {
  }
  fail(message){this.pending=false;this.data.status='error';this.data.progress=null;this.data.message=message;this.status();this.sound();}
  status(){
-  const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||'Prepara il lavoro, genera i provini e scegli quale continuare.';s.dataset.state=this.data.status;}
+  const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||(this.config?.task==='edit'?'Seleziona un tratto, descrivi la modifica e applica l’edit.':'Prepara il lavoro, genera i provini e scegli quale continuare.');s.dataset.state=this.data.status;}
   this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting);
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
@@ -208,7 +210,13 @@ export class DirectorStudio {
   if(this.pending||this.submitting)return;this.submitting=true;this.armSound();
   try{
    if(action!=='draft'&&!this.config.selected)throw new Error('Scegli prima un provino.');
-   if(action==='draft'){
+   if(action==='draft'&&this.config.task==='edit'){
+    if(!this.config.edit.source||!this.editMeta)throw new Error('Carica un video e attendi la timeline.');
+    if(!this.config.prompt.trim())throw new Error('Descrivi la modifica da applicare.');
+    if(!this.catalog.models.includes(this.config.models.ref2v))throw new Error('Seleziona un checkpoint Ref2VA installato.');
+    if(this.config.refs.some(r=>!r.name))throw new Error('Carica o rimuovi le reference vuote.');
+   }
+   if(action==='draft'&&this.config.task!=='edit'){
     if(this.config.task==='i2v'&&!this.config.first&&!this.config.last)throw new Error('Carica il primo o l’ultimo fotogramma.');
     if(this.config.task==='ref2v'&&!this.config.refs.length)throw new Error('Carica almeno una reference.');
     if(this.config.exploration==='prompts'&&this.config.variants.some(v=>!v.text.trim()))throw new Error('Completa o rimuovi le schede prompt vuote.');
@@ -274,21 +282,30 @@ export class DirectorStudio {
  }
  render(){
   if(!this.dialog||this.loading)return;
+  const scroll=this.dialog.querySelector('main')?.scrollTop||0;
+  const expanded=new Map();
+  for(const d of this.dialog.querySelectorAll('details')){const key=d.querySelector('summary')?.textContent.replace(/ · \d+$/,'');if(!expanded.has(key))expanded.set(key,[]);expanded.get(key).push(d.open);}
+  this.editTimeline?.destroy();this.editTimeline=null;
   this.folderPanel=null;this.dialog.querySelectorAll('video').forEach(v=>v.pause());this.dialog.replaceChildren();
   this.dialog.append(this.header());
-  const nav=el('nav');for(const [key,label]of[['prepare','01 Prepara'],['choose','02 Scegli'],['develop','03 Sviluppa'],['finish','04 Finalizza']])nav.append(button(label,()=>{this.page=key;this.render();},this.page===key?'is-active':''));
+  const isEdit=this.config.task==='edit';
+  if(isEdit&&!['prepare','choose'].includes(this.page))this.page='prepare';
+  const nav=el('nav');for(const [key,label]of(isEdit?[['prepare','01 Video Edit'],['choose','02 Video completo']]:[['prepare','01 Prepara'],['choose','02 Scegli'],['develop','03 Sviluppa'],['finish','04 Finalizza']]))nav.append(button(label,()=>{this.page=key;this.render();this.dialog.querySelector('main').scrollTop=0;},this.page===key?'is-active':''));
   const fresh=button('Nuova sessione',()=>{if(this.pending)return;if(!window.confirm('Avviare una nuova sessione? I video precedenti restano salvati. Salva il workflow in Comfy per poter riaprire anche la galleria precedente.'))return;this.config.session=crypto.randomUUID();this.config.selected='';this.config.action='draft';this.config.selected_development='';this.data={candidates:[],developments:[],finals:[],status:'new'};this.promptId=null;this.A=this.B=null;this.previewData=null;this.page='prepare';this.save();this.render();});fresh.dataset.queue='';nav.append(fresh);
   const stop=button('Interrompi',()=>this.stop().catch(e=>{this.data.message='Interruzione non confermata: '+e.message;this.status();}));stop.dataset.stop='';nav.append(stop);const state=el('div','','dg-state');state.append(el('div','','dg-status'),el('progress','','dg-progress'),el('small','','dg-progress-label'));this.dialog.append(nav,state);
   const body=el('main');this.dialog.append(body);
-  if(this.page==='prepare')this.prepare(body);if(this.page==='choose')this.choose(body);if(this.page==='develop')this.develop(body);if(this.page==='finish')this.finish(body);
+  if(this.page==='prepare')this.prepare(body);if(this.page==='choose'){if(isEdit)renderEditResults(this,body);else this.choose(body);}if(this.page==='develop')this.develop(body);if(this.page==='finish')this.finish(body);
   const foot=el('footer','Salvataggio automatico della sessione · Cartella output configurabile in Prepara · Esc torna a Comfy');this.dialog.append(foot);this.status();
+  for(const d of this.dialog.querySelectorAll('details')){const key=d.querySelector('summary')?.textContent.replace(/ · \d+$/,'');const states=expanded.get(key);if(states?.length)d.open=states.shift();}
+  body.scrollTop=scroll;
  }
  prepare(body){
   const c=this.config;const intro=this.section(body,'Il tuo lavoro');const row=el('div','','dg-grid');intro.append(row);
   const previousTask=c.task;
-  this.field(row,'Nome lavoro',c,'job');this.field(row,'Cosa vuoi creare?',c,'task',{options:[['i2v','Da immagini · primo e/o ultimo frame'],['t2v','Da testo · nessuna immagine'],['ref2v','Da reference · immagini e video']],change:()=>this.switchTask(previousTask)});
+  this.field(row,'Nome lavoro',c,'job');this.field(row,'Cosa vuoi creare?',c,'task',{options:[['i2v','Da immagini · primo e/o ultimo frame'],['t2v','Da testo · nessuna immagine'],['ref2v','Da reference · immagini e video'],['edit','Video Edit · modifica un tratto del video']],change:()=>this.switchTask(previousTask)});
   this.field(intro,'Cartella output · vuoto = cartella Comfy',c,'output_dir',{hint:'Percorso assoluto sul computer dove gira Comfy. I video vengono copiati qui e restano visibili nella galleria.'});
   intro.append(button('Scegli cartella…',()=>this.browseFolders()));
+  if(c.task==='edit'){renderEditor(this,body);return;}
   this.field(intro,'Genera audio nei video',c,'generate_audio',{type:'checkbox',hint:'Disattivato: provini e finali vengono esportati senza traccia audio. H3 mantiene internamente i latenti audiovisivi.'});
   const assets=el('div','','dg-grid');body.append(assets);
   if(c.task==='i2v'){this.asset(assets,'Primo fotogramma · facoltativo',c,'first');this.asset(assets,'Ultimo fotogramma · facoltativo',c,'last');}
@@ -308,7 +325,7 @@ export class DirectorStudio {
    for(let i=0;i<c.count;i++){c.trial_loras[String(i)] ||= [];this.loras(prompt,c.trial_loras[String(i)],`LoRA aggiuntive · provino ${i+1}`);}
   }else{
    c.variants.forEach((v,i)=>{const card=this.section(prompt,`Prompt ${i+1}`);this.field(card,'Testo completo',v,'text',{multi:true,rows:7});this.loras(card,v.loras ||= [],'LoRA aggiuntive');if(c.variants.length>1)card.append(button('Elimina questa variante',()=>{c.variants.splice(i,1);this.save();this.render();}));});
-   if(c.variants.length<10)prompt.append(button('+ Nuovo prompt',()=>{c.variants.push({text:'',loras:[]});this.save();this.render();}));
+   if(c.variants.length<10)prompt.append(button('+ Nuovo prompt',()=>{c.variants.push({text:'',loras:[]});this.save();this.render();const inputs=this.dialog.querySelectorAll('textarea');inputs[inputs.length-1]?.focus({preventScroll:true});}));
   }
   const size=this.section(body,'Formato dei provini');const sizes=el('div','','dg-grid');size.append(sizes);
   this.field(sizes,'Proporzioni automatiche dalla prima immagine disponibile',c,'auto_aspect',{type:'checkbox',change:()=>this.render()});
