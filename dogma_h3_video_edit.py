@@ -10,6 +10,9 @@ import subprocess
 import tempfile
 import time
 from fractions import Fraction
+from bisect import bisect_left
+import copy
+from .dogma_h3_edit_mask import mask_defaults, mask_settings, validate_alignment, write_segment, register_mask_routes, prepare_masked_latent
 
 # Native H3 temporal grid; the selected interval is independent of this grid.
 # 362/24 exceeds the 15 s reference budget; keep the source reference <=15 s.
@@ -18,6 +21,7 @@ EDIT_FRAMES = tuple(range(5, 346, 17))
 
 def edit_defaults():
     return dict(source='', start=0., end=107/24, fade=.125, anchor_edges=True,
+                mask=mask_defaults(), selected_trial='', trial_edge=512,
                 turbo='', turbo_strength=1., steps=20, sampler='res_multistep',
                 scheduler='simple', shift_video=12., shift_audio=3.,
                 lying=0., lying_start=.1, lying_end=.9)
@@ -50,7 +54,8 @@ def probe(path):
             raise ValueError('Durata del video non leggibile.')
         # Reject formats that need a separate color-managed / orientation workflow.
         rotation = int(float(s.metadata.get('rotate', '0'))) % 360
-        first = next(container.decode(s), None)
+        decoded = container.decode(s)
+        first = next(decoded, None)
         if first is None:
             raise ValueError('Video privo di fotogrammi decodificabili.')
         rotation = int(getattr(first, 'rotation', rotation) or rotation) % 360
@@ -63,8 +68,17 @@ def probe(path):
             raise ValueError('Sorgente HDR: questa versione Video Edit richiede un master SDR.')
         start = float(s.start_time * s.time_base) if s.start_time is not None else float(first.time or 0)
         origin = float(container.start_time/av.time_base) if container.start_time is not None else start
+        times = [0.]
+        for frame in decoded:
+            if frame.time is None:
+                raise ValueError('Il video non ha timestamp utilizzabili per una selezione precisa.')
+            second = float(frame.time)-start
+            if second > times[-1]:
+                times.append(second)
+        if duration <= times[-1]:
+            duration = times[-1]+1/float(rate)
         return dict(width=s.width, height=s.height, fps=float(rate), fps_ratio=str(rate),
-                    duration=duration, frames=int(s.frames or 0), video_start=start,
+                    duration=duration, frames=len(times), frame_times=times, video_start=start,
                     video_offset=start-origin, audio=bool(container.streams.audio),
                     audio_codecs=[x.codec_context.name for x in container.streams.audio],
                     generation_frames=list(EDIT_FRAMES), generation_fps=24,
@@ -76,20 +90,34 @@ def plan_interval(meta, start, end):
     if not all(math.isfinite(v) for v in (start, end)):
         raise ValueError('Selezione temporale non valida.')
     fps = Fraction(meta['fps_ratio'])
-    start_frame = round(start * float(fps))
-    end_frame = round(end * float(fps))
-    count = end_frame-start_frame
-    start, end = start_frame/float(fps), end_frame/float(fps)
-    if count < 1:
-        raise ValueError('Seleziona almeno un fotogramma.')
-    if start < 0 or end > meta['duration'] + 1e-6:
+    times = meta.get('frame_times')
+    def nearest(second):
+        if times is None:
+            return math.floor(second*float(fps)+.5)
+        boundaries = [*times, meta['duration']]
+        i = bisect_left(boundaries, second)
+        if i >= len(boundaries):
+            return len(times)
+        if i > 0 and second-boundaries[i-1] < boundaries[i]-second:
+            i -= 1
+        return i
+    start_frame, end_frame = nearest(start), nearest(end)
+    total = len(times) if times is not None else math.floor(meta['duration']*float(fps)+1e-6)
+    if start < 0 or end > meta['duration']+1e-6 or start_frame < 0 or end_frame > total:
         raise ValueError('La selezione supera il video sorgente.')
-    required = math.ceil(count / float(fps) * 24 - 1e-8)
+    if end_frame <= start_frame:
+        raise ValueError('Seleziona almeno un fotogramma.')
+    start = times[start_frame] if times is not None else start_frame/float(fps)
+    end = (times[end_frame] if end_frame < total else meta['duration']) if times is not None else end_frame/float(fps)
+    required = math.ceil((end-start)*24-1e-8)
     generation_frames = next((n for n in EDIT_FRAMES if n >= required), None)
     if generation_frames is None:
         raise ValueError('La selezione supera la durata disponibile per H3.')
+    last_time = times[end_frame-1] if times is not None else (end_frame-1)/float(fps)
     return dict(start=start, end=end, duration=end-start, generation_frames=generation_frames,
-                source_frames=count, start_frame=start_frame, end_frame=end_frame)
+                source_frames=end_frame-start_frame, start_frame=start_frame, end_frame=end_frame,
+                last_source_time=last_time)
+
 
 
 def check_config(c, input_file):
@@ -98,6 +126,13 @@ def check_config(c, input_file):
         raise ValueError('Carica il video da modificare.')
     meta = probe(input_file(e['source']))
     plan = plan_interval(meta,e['start'],e['end'])
+    settings = mask_settings(e.get('mask'))
+    if settings['enabled']:
+        if not settings['source']: raise ValueError('Carica il video maschera bianco e nero.')
+        validate_alignment(meta,probe(input_file(settings['source'])))
+        import nodes
+        if 'MVEx_MaskToLatentSpace' not in nodes.NODE_CLASS_MAPPINGS:
+            raise ValueError('Installa o aggiorna MaskVidExperiments dal Manager per usare la maschera H3.')
     if not 0 <= float(e['fade']) <= .5:
         raise ValueError('Raccordo: da 0 a 0,5 secondi.')
     if not 1 <= int(e['steps']) <= 100:
@@ -127,7 +162,7 @@ def check_config(c, input_file):
     return meta,plan
 
 
-def segment_tensor(path, start, n, width, height, interrupt=lambda:None, end=None, source_fps=24):
+def segment_tensor(path, start, n, width, height, interrupt=lambda:None, end=None, source_fps=24, last_time=None, resize_size=None):
     """Seek near the selection; sample by timestamps, with no temporal stretch."""
     import av
     import numpy as np
@@ -136,12 +171,13 @@ def segment_tensor(path, start, n, width, height, interrupt=lambda:None, end=Non
         stream = container.streams.video[0]
         origin = float(stream.start_time*stream.time_base) if stream.start_time is not None else 0.
         container.seek(int((origin+start)/float(stream.time_base)),stream=stream,backward=True)
-        last = max(start, end-1/source_fps) if end is not None else float('inf')
+        last = last_time if last_time is not None else (max(start, end-1/source_fps) if end is not None else float('inf'))
         targets = [origin+min(start+i/24,last) for i in range(n)]
         result = torch.empty((n,height,width,3),dtype=torch.float32)
         prev = None; pos = 0
         def put(frame):
             nonlocal pos
+            if resize_size: frame = frame.reformat(width=resize_size[0],height=resize_size[1])
             arr = frame.to_ndarray(format='rgb24')
             h,w = arr.shape[:2]
             if w>width or h>height:
@@ -238,7 +274,7 @@ def compose(source,patch,dest,meta,plan,fade,interrupt=lambda:None):
     return {'audio_copied':copy_audio,'fps':meta['fps'],'width':meta['width'],'height':meta['height']}
 
 
-def run_edit(c,root,st,update,progress,uid):
+def render_edit(c,root,st,update,progress,uid,trial=False,resources=None):
     from . import dogma_h3_director_v134 as director
     import comfy.model_management as mm
     from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo,MiniMaxH3AddGuide
@@ -246,11 +282,13 @@ def run_edit(c,root,st,update,progress,uid):
     import re
     meta,plan=check_config(c,director.input_file)
     source=director.input_file(c['edit']['source'])
-    width=math.ceil(meta['width']/32)*32; height=math.ceil(meta['height']/32)*32
+    scale=min(1.,int(c['edit'].get('trial_edge',512))/max(meta['width'],meta['height'])) if trial else 1.
+    content_width=max(2,round(meta['width']*scale/2)*2);content_height=max(2,round(meta['height']*scale/2)*2)
+    width=math.ceil(content_width/32)*32; height=math.ceil(content_height/32)*32
     n=plan['generation_frames']
     update('running','Lettura della sola selezione…',active='edit')
     selected=segment_tensor(source,plan['start'],n,width,height,mm.throw_exception_if_processing_interrupted,
-                            end=plan['end'],source_fps=meta['fps'])
+                            end=plan['end'],source_fps=meta['fps'],last_time=plan['last_source_time'],resize_size=(content_width,content_height) if trial else None)
     images={};videos={'ref_video_1':selected}
     for r in c['refs']:
         if r['kind']=='image':images[f'ref_image_{len(images)+1}']=director.load_image(r['name'])
@@ -261,8 +299,8 @@ def run_edit(c,root,st,update,progress,uid):
             # ignore requested reference content.
             if rn>n: raise ValueError('Un video reference è più lungo del tratto editato: accorcialo prima di caricarlo.')
             videos[f'ref_video_{len(videos)+1}']=segment_tensor(p,0,rn,math.ceil(m['width']/32)*32,math.ceil(m['height']/32)*32,mm.throw_exception_if_processing_interrupted)
-    update('running',f'Video Edit · {meta["width"]} × {meta["height"]} · caricamento Ref2VA')
-    res=director.load_resources(c)
+    update('running',f'Video Edit · {content_width} × {content_height} · caricamento Ref2VA')
+    res=resources if resources is not None else director.load_resources(c)
     prompt=('integrated_multimodal_description:\n[Shot 1]\n'
             'The target video is an edited version of <Video 1>. Preserve its shot, camera, '
             'timing, motion and all elements not explicitly requested to change. '
@@ -270,30 +308,87 @@ def run_edit(c,root,st,update,progress,uid):
             'Apply only the following edit, using additional references as specified:\n'+c['prompt'].strip())
     cond,latent=MiniMaxH3ReferenceToVideo.execute(res['clip'],prompt,width,height,n,'match',
         vae=res['vae'],audio_vae=res['audio'],ref_images=images,ref_videos=videos)
-    if c['edit']['anchor_edges']:
+    settings=mask_settings(c['edit'].get('mask'))
+    if settings['enabled']:
+        update('running','Codifica del sorgente e maschera nativa H3')
+        latent=prepare_masked_latent(director,latent,res['vae'],selected,director.input_file(settings['source']),settings,plan,
+                                     (content_width,content_height),mm.throw_exception_if_processing_interrupted)
+    if c['edit']['anchor_edges'] and not settings['enabled']:
         cond=MiniMaxH3AddGuide.execute(cond,latent,0,vae=res['vae'],image=selected[:1])[0]
         cond=MiniMaxH3AddGuide.execute(cond,latent,-1,vae=res['vae'],image=selected[-1:])[0]
     model=director.prepare_model(res,c,{'loras':c['common_loras']},'edit',uid)
     update('running','Video Edit · generazione del tratto selezionato')
-    result=director.sample(model,cond,latent,c['edit'],int(c['seed']),progress=progress)
+    result=director.sample(model,cond,latent,{**c['edit'],'lock_audio':False},int(c['seed']),progress=progress)
     output,_=director.decode(res,result,False)
     folder=root/'edits'/uuid.uuid4().hex;folder.mkdir(parents=True)
     patch=folder/'segment.mkv'
     update('running','Video Edit · rimozione bordi tecnici e raccordo')
-    save_patch(output,patch,meta['width'],meta['height'],n,mm.throw_exception_if_processing_interrupted)
+    save_patch(output,patch,content_width,content_height,n,mm.throw_exception_if_processing_interrupted)
     del result,output,selected,images,videos,cond,latent,model,res
     job=re.sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA'
-    final=folder/(job+'_H3_VIDEO_EDIT.mp4')
-    update('running','Ricostruzione del video completo · audio originale')
+    settings=mask_settings(c['edit'].get('mask'))
+    mask_path=director.input_file(settings['source']) if settings['enabled'] else None
+    mixed=folder/'composited.mkv'
+    final=folder/(job+('_H3_EDIT_TRIAL.mp4' if trial else '_H3_VIDEO_EDIT.mp4'))
+    update('running','Composizione del provino' if trial else 'Ricostruzione del video completo · audio originale')
     try:
-        info=compose(source,patch,final,meta,plan,c['edit']['fade'],mm.throw_exception_if_processing_interrupted)
+        if mask_path or trial:
+            write_segment(source,patch,mixed,meta,plan,mask_path=mask_path,settings=settings,
+                          size=(content_width,content_height),fade=c['edit']['fade'],
+                          interrupt=mm.throw_exception_if_processing_interrupted)
+        if trial:
+            encode_trial(mixed,final,plan['duration'],mm.throw_exception_if_processing_interrupted)
+            info=dict(audio_copied=False,fps=meta['fps'],width=content_width,height=content_height)
+        else:
+            info=compose(source,mixed if mask_path else patch,final,meta,plan,0 if mask_path else c['edit']['fade'],mm.throw_exception_if_processing_interrupted)
     finally:
-        patch.unlink(missing_ok=True)
-    item=dict(id=uuid.uuid4().hex,label='Video completo · edit applicato',video=director.view_file(final),
-              saved_path=director.export_file(final,c),complete=True,kind='edit',selection=plan,
-              duration=meta['duration'],config=c,**info)
-    st.setdefault('edits',[]).append(item)
-    update('done','Video completo pronto. Il tratto editato è già al suo posto.',active=None)
+        patch.unlink(missing_ok=True);mixed.unlink(missing_ok=True)
+    return dict(id=uuid.uuid4().hex,label='Provino edit' if trial else 'Video completo · edit applicato',video=director.view_file(final),
+                saved_path=str(final.resolve()) if trial else director.export_file(final,c),complete=True,kind='edit_trial' if trial else 'edit',
+                selection=plan,duration=plan['duration'] if trial else meta['duration'],config=copy.deepcopy(c),
+                segment_only=trial,prompt=c['prompt'],seed=int(c['seed']),**info)
+
+
+def encode_trial(source,dest,duration,interrupt):
+    args=[ffmpeg(),'-hide_banner','-loglevel','error','-nostdin','-y','-i',str(source),'-t',str(duration),
+          '-an','-c:v','libx264','-crf','18','-preset','veryfast','-pix_fmt','yuv420p','-fps_mode','passthrough',
+          '-enc_time_base:v','1:1000000','-movflags','+faststart',str(dest)]
+    with tempfile.TemporaryFile() as log:
+        process=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=log)
+        try:
+            while process.poll() is None: interrupt();time.sleep(.1)
+            if process.returncode:
+                log.seek(0);raise ValueError('Provino non codificato: '+log.read().decode(errors='replace')[-2000:])
+        except BaseException:
+            if process.poll() is None: process.kill();process.wait()
+            dest.unlink(missing_ok=True);raise
+
+
+def run_edit(c,root,st,update,progress,uid):
+    from . import dogma_h3_director_v134 as director
+    if c['action']=='draft':
+        trials=director.make_plan(c)
+        # Validate all trials before loading a model or erasing a previous result.
+        configs=[]
+        for trial in trials:
+            config=copy.deepcopy(c);config['prompt']=trial['prompt'];config['seed']=trial['seed'];config['common_loras']=trial['loras']
+            check_config(config,director.input_file);configs.append(config)
+        resources=director.load_resources(configs[0])
+        for i,config in enumerate(configs):
+            update('running',f'Provino edit {i+1}/{len(configs)} · 512 px')
+            item=render_edit(config,root,st,update,progress,uid,trial=True,resources=resources)
+            item['label']=f'Provino edit {len(st.get("edit_trials",[]))+1}'
+            st.setdefault('edit_trials',[]).append(item)
+            update('running',f'Provino edit {i+1}/{len(configs)} pronto',active=None)
+        update('ready','Provini edit pronti. Scegli quale rigenerare alla dimensione originale.',active=None)
+    else:
+        selected=next((x for x in st.get('edit_trials',[]) if x['id']==c['edit'].get('selected_trial')),None)
+        if selected is None: raise ValueError('Scegli prima un provino edit.')
+        config=copy.deepcopy(selected['config']);config['action']='finish';config['output_dir']=c['output_dir'];config['job']=c['job']
+        item=render_edit(config,root,st,update,progress,uid,trial=False)
+        item['trial']=selected['id'];st.setdefault('edits',[]).append(item)
+        update('done','Video completo pronto. Edit e maschera applicati alla dimensione originale.',active=None)
+
 
 
 def register_edit_routes(routes,input_file):
@@ -301,6 +396,7 @@ def register_edit_routes(routes,input_file):
     import asyncio
     from functools import lru_cache
     slots=asyncio.Semaphore(3)
+    cleanup=register_mask_routes(routes,input_file,probe,plan_interval)
 
     @lru_cache(maxsize=128)
     def metadata_cached(path,size,mtime):
@@ -332,3 +428,4 @@ def register_edit_routes(routes,input_file):
             return web.Response(body=data,content_type='image/jpeg',headers={'Cache-Control':'private, max-age=60'})
         except (ValueError,OSError) as exc:
             raise web.HTTPBadRequest(text=str(exc))
+    return cleanup

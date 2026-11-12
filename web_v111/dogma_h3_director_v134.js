@@ -1,18 +1,15 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { renderEditor, renderEditResults } from './dogma_h3_video_edit.js?v=preview-timing-2';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-43';
+
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-43';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=preview-timing-2',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-43',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
-const inputURL=name=>{
- const path=name.replaceAll('\\','/'),split=path.lastIndexOf('/');
- return api.apiURL('/view?'+new URLSearchParams({filename:path.slice(split+1),subfolder:split<0?'':path.slice(0,split),type:'input'}));
-};
-const viewURL=file=>api.apiURL('/view?'+new URLSearchParams(file));
-const film=file=>{const v=el('video');v.controls=true;v.loop=true;v.playsInline=true;v.preload='metadata';v.src=viewURL(file);return v;};
+const film=file=>mediaPreview(file,{loop:true}).root;
 let active=null;
 
 export class DirectorStudio {
@@ -100,7 +97,7 @@ export class DirectorStudio {
   const controller=new AbortController(),epoch=this.epoch;this.requests.add(controller);let expired=false;
   const timeout=opts.body instanceof FormData?null:setTimeout(()=>{expired=true;controller.abort();},20000);
   try{
-   const r=await api.fetchApi(path,{...opts,signal:controller.signal});
+   const r=await api.fetchApi(path,{...opts,signal:opts.signal?AbortSignal.any([controller.signal,opts.signal]):controller.signal});
    if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);
    const result=await r.json();
    if(epoch!==this.epoch){const e=new Error('Pannello chiuso');e.name='AbortError';throw e;}
@@ -136,7 +133,8 @@ export class DirectorStudio {
   }
  }
  close(){
-  this.editTimeline?.destroy();this.editTimeline=null;
+  this.editTimeline?.destroy();this.editTimeline=null;this.editCompare?.destroy();this.editCompare=null;this.maskEditor?.destroy();this.maskEditor=null;
+  releaseMedia(this.dialog);
   ++this.epoch;clearInterval(this.poll);this.recovering=false;
   for(const c of this.requests)c.abort();this.requests.clear();
   const dialog=this.dialog;this.dialog=null;this.folderPanel=null;if(active===this)active=null;
@@ -179,7 +177,9 @@ export class DirectorStudio {
  }
  armSound(){if(this.config.sound){try{this.audio ||= new(window.AudioContext||window.webkitAudioContext)();this.audio.resume();}catch{}}}
  applyState(d){
-  const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length;
+  const change=this.data.status!==d.status||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length||this.data.edit_trials?.length!==d.edit_trials?.length;
+  if((d.edit_trials?.length||0)>(this.data.edit_trials?.length||0)){this.editTrialId=d.edit_trials.at(-1).id;this.editComparePosition=null;}
+  if((d.edits?.length||0)>(this.data.edits?.length||0)){this.editResultId=d.edits.at(-1).id;this.editComparePosition=null;}
   this.data=d;
   if(['ready','developed','done','error'].includes(d.status)){this.pending=false;d.progress=null;const key=d.run+':'+d.status+':'+d.message;if(key!==this.lastNotice){this.lastNotice=key;this.sound();}}
   if(change&&this.page!=='prepare')this.render();else this.status();
@@ -202,20 +202,24 @@ export class DirectorStudio {
  }
  fail(message){this.pending=false;this.data.status='error';this.data.progress=null;this.data.message=message;this.status();this.sound();}
  status(){
-  const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||(this.config?.task==='edit'?'Seleziona un tratto, descrivi la modifica e applica l’edit.':'Prepara il lavoro, genera i provini e scegli quale continuare.');s.dataset.state=this.data.status;}
-  this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting);
+  const s=this.dialog?.querySelector('.dg-status');if(s){s.textContent=this.data.message||(this.config?.task==='edit'?'Seleziona un tratto, prepara la maschera se serve e genera i provini edit.':'Prepara il lavoro, genera i provini e scegli quale continuare.');s.dataset.state=this.data.status;}
+  this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting||this.uploads>0);
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
   // Always allow a fresh queue check: UI state can lag behind a failed job.
   const stop=this.dialog?.querySelector('[data-stop]');if(stop){stop.disabled=!!this.stopping;stop.textContent=this.pending?'Interrompi':'Verifica / interrompi';}
  }
  async queue(action){
-  if(this.pending||this.submitting)return;this.submitting=true;this.armSound();
+  if(this.pending||this.submitting||this.uploads>0)return;this.submitting=true;this.armSound();
   try{
-   if(action!=='draft'&&!this.config.selected)throw new Error('Scegli prima un provino.');
+   if(this.config.task!=='edit'&&action!=='draft'&&!this.config.selected)throw new Error('Scegli prima un provino.');
    if(action==='draft'&&this.config.task==='edit'){
     if(!this.config.edit.source||!this.editMeta)throw new Error('Carica un video e attendi la timeline.');
-    if(!this.config.prompt.trim())throw new Error('Descrivi la modifica da applicare.');
+    if(!this.editTimeline?.commitInputs())throw new Error('Controlla i tempi della selezione.');
+    if((this.editTimeline.video?.readyState||0)<2)throw new Error('Attendi l’anteprima video o ricaricala prima di applicare l’edit.');
+    if(this.config.exploration==='seeds'&&!this.config.prompt.trim())throw new Error('Descrivi la modifica da applicare.');
+    if(this.config.exploration==='prompts'&&this.config.variants.some(v=>!v.text.trim()))throw new Error('Completa o rimuovi le varianti prompt vuote.');
+    if(this.config.edit.mask?.enabled&&!this.config.edit.mask.source)throw new Error('Carica il video maschera oppure disattiva la maschera.');
     if(!this.catalog.models.includes(this.config.models.ref2v))throw new Error('Seleziona un checkpoint Ref2VA installato.');
     if(this.config.refs.some(r=>!r.name))throw new Error('Carica o rimuovi le reference vuote.');
    }
@@ -228,12 +232,15 @@ export class DirectorStudio {
     if(!this.catalog.models.includes(checkpoint))throw new Error('Seleziona un checkpoint installato per '+this.config.task.toUpperCase()+' nelle impostazioni avanzate.');
     if(this.config.refs.some(r=>!r.name)&&this.config.task==='ref2v')throw new Error('Carica o rimuovi le reference vuote.');
    }
-   if(action==='finish'&&!this.data.developments?.some(p=>p.id===this.config.selected_development&&p.candidate===this.config.selected))throw new Error('Scegli prima uno sviluppo di qualità.');
+   if(action==='finish'&&this.config.task==='edit'&&!this.data.edit_trials?.some(p=>p.id===this.config.edit.selected_trial))throw new Error('Scegli prima un provino edit.');
+   if(action==='finish'&&this.config.task!=='edit'&&!this.data.developments?.some(p=>p.id===this.config.selected_development&&p.candidate===this.config.selected))throw new Error('Scegli prima uno sviluppo di qualità.');
+   const executionConfig=this.config.task==='edit'&&action==='finish'?this.data.edit_trials.find(p=>p.id===this.config.edit.selected_trial).config:this.config;
    const required=[];
+   if(executionConfig.task==='edit'&&executionConfig.edit.mask?.enabled)required.push('MVEx_MaskToLatentSpace');
    if(action==='develop'&&this.config.develop.mode==='guided')required.push('MinimaxH3LatentUpscaler3D');
-   if(this.config.preview.enabled)required.push('ModelPreviewOverrideKJ');
-   if(action==='finish'&&this.config.finish.stages!=='ultimate')required.push('MinimaxH3LatentUpscaler3D');
-   if(action==='finish'&&this.config.finish.stages!=='latent')required.push('UltimateSDUpscaleNoUpscaleGuider');
+   if(executionConfig.preview.enabled)required.push('ModelPreviewOverrideKJ');
+   if(action==='finish'&&this.config.task!=='edit'&&this.config.finish.stages!=='ultimate')required.push('MinimaxH3LatentUpscaler3D');
+   if(action==='finish'&&this.config.task!=='edit'&&this.config.finish.stages!=='latent')required.push('UltimateSDUpscaleNoUpscaleGuider');
    const missing=required.filter(n=>!this.catalog.nodes.includes(n));if(missing.length)throw new Error('Installa dal Manager i nodi richiesti: '+missing.join(', '));
    const q=await this.request('/queue');if(q.queue_running?.length||q.queue_pending?.length)throw new Error('Comfy sta già lavorando. Attendi la fine della coda.');
    this.config.action=action;this.config.nonce++;this.save();
@@ -274,11 +281,11 @@ export class DirectorStudio {
    d.append(button('+ Aggiungi LoRA',()=>{stack.push({name:'',strength:1});this.save();draw();}));
   };draw();
  }
- asset(parent,title,obj,key,kind='image',remove){
+ asset(parent,title,obj,key,kind='image',remove,onUpload){
   const p=this.section(parent,title);const name=obj[key];
-  if(name){const media=el(kind==='video'?'video':'img');media.src=inputURL(name);if(kind==='video')media.controls=true;media.className='dg-asset';p.append(media,el('small',name));}
+  if(name)p.append(mediaPreview(inputFile(name),{kind,className:'dg-asset'}).root,el('small',name));
   const upload=el('input');upload.type='file';upload.accept=kind==='video'?'video/*':'image/*';upload.hidden=true;
-  upload.onchange=async()=>{const file=upload.files?.[0];if(!file)return;try{const data=new FormData();data.append('image',file);data.append('type','input');data.append('subfolder','DOGMA_DIRECTOR');const res=await this.request('/upload/image',{method:'POST',body:data});obj[key]=(res.subfolder?res.subfolder+'/':'')+res.name;this.save();this.render();}catch(e){if(e.name!=='AbortError')this.fail(e.message);}};
+  upload.onchange=async()=>{const file=upload.files?.[0];if(!file)return;this.uploads=(this.uploads||0)+1;this.status();try{const data=new FormData();data.append('image',file);data.append('type','input');data.append('subfolder','DOGMA_DIRECTOR');const res=await this.request('/upload/image',{method:'POST',body:data});obj[key]=(res.subfolder?res.subfolder+'/':'')+res.name;onUpload?.();this.save();this.render();}catch(e){if(e.name!=='AbortError')this.fail(e.message);}finally{this.uploads--;this.status();}};
   p.append(upload,button(name?'Cambia file':'Carica file',()=>upload.click()));
   if(name||remove)p.append(button('Rimuovi',()=>{if(remove)remove();else obj[key]='';this.save();this.render();}));
   return p;
@@ -288,16 +295,17 @@ export class DirectorStudio {
   const scroll=this.dialog.querySelector('main')?.scrollTop||0;
   const expanded=new Map();
   for(const d of this.dialog.querySelectorAll('details')){const key=d.querySelector('summary')?.textContent.replace(/ · \d+$/,'');if(!expanded.has(key))expanded.set(key,[]);expanded.get(key).push(d.open);}
-  this.editTimeline?.destroy();this.editTimeline=null;
+  this.editTimeline?.destroy();this.editTimeline=null;this.editCompare?.destroy();this.editCompare=null;this.maskEditor?.destroy();this.maskEditor=null;
+  releaseMedia(this.dialog);
   this.folderPanel=null;this.dialog.querySelectorAll('video').forEach(v=>v.pause());this.dialog.replaceChildren();
   this.dialog.append(this.header());
   const isEdit=this.config.task==='edit';
-  if(isEdit&&!['prepare','choose'].includes(this.page))this.page='prepare';
-  const nav=el('nav');for(const [key,label]of(isEdit?[['prepare','01 Video Edit'],['choose','02 Video completo']]:[['prepare','01 Prepara'],['choose','02 Scegli'],['develop','03 Sviluppa'],['finish','04 Finalizza']]))nav.append(button(label,()=>{this.page=key;this.render();this.dialog.querySelector('main').scrollTop=0;},this.page===key?'is-active':''));
+  if(isEdit&&!['prepare','choose','finish'].includes(this.page))this.page='prepare';
+  const nav=el('nav');for(const [key,label]of(isEdit?[['prepare','01 Video Edit'],['choose','02 Provini'],['finish','03 Video completo']]:[['prepare','01 Prepara'],['choose','02 Scegli'],['develop','03 Sviluppa'],['finish','04 Finalizza']]))nav.append(button(label,()=>{this.page=key;this.render();this.dialog.querySelector('main').scrollTop=0;},this.page===key?'is-active':''));
   const fresh=button('Nuova sessione',()=>{if(this.pending)return;if(!window.confirm('Avviare una nuova sessione? I video precedenti restano salvati. Salva il workflow in Comfy per poter riaprire anche la galleria precedente.'))return;this.config.session=crypto.randomUUID();this.config.selected='';this.config.action='draft';this.config.selected_development='';this.data={candidates:[],developments:[],finals:[],status:'new'};this.promptId=null;this.A=this.B=null;this.previewData=null;this.page='prepare';this.save();this.render();});fresh.dataset.queue='';nav.append(fresh);
   const stop=button('Interrompi',()=>this.stop().catch(e=>{this.data.message='Interruzione non confermata: '+e.message;this.status();}));stop.dataset.stop='';nav.append(stop);const state=el('div','','dg-state');state.append(el('div','','dg-status'),el('progress','','dg-progress'),el('small','','dg-progress-label'));this.dialog.append(nav,state);
   const body=el('main');this.dialog.append(body);
-  if(this.page==='prepare')this.prepare(body);if(this.page==='choose'){if(isEdit)renderEditResults(this,body);else this.choose(body);}if(this.page==='develop')this.develop(body);if(this.page==='finish')this.finish(body);
+  if(this.page==='prepare')this.prepare(body);if(this.page==='choose'){if(isEdit)renderEditTrials(this,body);else this.choose(body);}if(this.page==='develop')this.develop(body);if(this.page==='finish'){if(isEdit)renderEditResults(this,body);else this.finish(body);}
   const foot=el('footer','Salvataggio automatico della sessione · Cartella output configurabile in Prepara · Esc torna a Comfy');this.dialog.append(foot);this.status();
   for(const d of this.dialog.querySelectorAll('details')){const key=d.querySelector('summary')?.textContent.replace(/ · \d+$/,'');const states=expanded.get(key);if(states?.length)d.open=states.shift();}
   body.scrollTop=scroll;
@@ -377,7 +385,7 @@ export class DirectorStudio {
    for(const side of ['A','B'])card.append(button('Confronta '+side,()=>{this[side]=p.id;this.render();}));
   });
   const a=items.find(p=>p.id===this.A),b=items.find(p=>p.id===this.B);
-  if(a&&b){const compare=this.section(body,'Confronto A / B');const g=el('div','','dg-grid');const av=film(a.video),bv=film(b.video);av.muted=bv.muted=true;g.append(av,bv);compare.append(g,button('Riproduci insieme',()=>{av.currentTime=bv.currentTime=0;av.play();bv.play();}),button('Pausa',()=>{av.pause();bv.pause();}));}
+  if(a&&b){const compare=this.section(body,'Confronto A / B');const g=el('div','','dg-grid');const ap=mediaPreview(a.video,{loop:true}),bp=mediaPreview(b.video,{loop:true}),av=ap.media,bv=bp.media;av.muted=bv.muted=true;g.append(ap.root,bp.root);compare.append(g,button('Riproduci insieme',()=>{av.currentTime=bv.currentTime=0;av.play();bv.play();}),button('Pausa',()=>{av.pause();bv.pause();}));}
  }
  develop(body){
   const p=this.data.candidates?.find(x=>x.id===this.config.selected);

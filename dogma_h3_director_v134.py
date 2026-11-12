@@ -64,7 +64,7 @@ def parse_config(raw):
     c['session']=str(uuid.UUID(c['session']))
     if c['action'] not in ('draft','develop','finish'): raise ValueError('Azione non valida.')
     if c['task'] not in ('i2v','t2v','ref2v','edit'): raise ValueError('Scegli I2V, T2V, Ref2Video o Video Edit.')
-    if c['task']=='edit' and c['action']!='draft': raise ValueError('Video Edit usa solo Applica edit, senza sviluppo o upscale.')
+    if c['task']=='edit' and c['action'] not in ('draft','finish'): raise ValueError('Video Edit usa provini e rigenerazione originale.')
     if c['exploration'] not in ('seeds','prompts'): raise ValueError('Modalità provini non valida.')
     if not 1<=int(c['count'])<=10: raise ValueError('Scegli da 1 a 10 provini.')
     if not 0.2<=float(c['seconds'])<=15: raise ValueError('Durata: da 0,2 a 15 secondi.')
@@ -576,7 +576,8 @@ def register_routes():
     import folder_paths, comfy.samplers, nodes
     routes=PromptServer.instance.routes
     from .dogma_h3_video_edit import register_edit_routes
-    register_edit_routes(routes,input_file)
+    cleanup=register_edit_routes(routes,input_file)
+    PromptServer.instance.app.on_cleanup.append(cleanup)
     def local_request(request):
         from urllib.parse import urlparse
         if request.remote not in ('127.0.0.1','::1'):
