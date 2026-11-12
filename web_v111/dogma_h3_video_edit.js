@@ -4,13 +4,12 @@ const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textConten
 const button=(text,fn)=>{const e=el('button',text);e.type='button';e.onclick=fn;return e;};
 const url=(path,params)=>api.apiURL(path+'?'+new URLSearchParams(params));
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-export const editCounts=(fps,frames=Array.from({length:15},(_,i)=>107+17*i))=>frames.map(n=>Math.floor(n*fps/24+1e-8));
 export function snapSelection(start,end,meta,side='end'){
- const fps=meta.fps,total=Math.floor(meta.duration*fps+1e-6),counts=editCounts(fps,meta.generation_frames).filter(n=>n<=total);
- if(!counts.length)throw new Error('Nessuna durata H3 disponibile: serve un sorgente di almeno circa 4,46 s e un totale video reference entro 15 s.');
- let a=Math.round(start*fps),b=Math.round(end*fps);
- const wanted=Math.max(0,b-a),n=counts.reduce((best,x)=>Math.abs(x-wanted)<Math.abs(best-wanted)?x:best,counts[0]);
- if(side==='start'){b=clamp(b,n,total);a=b-n;}else{a=clamp(a,0,total-n);b=a+n;}
+ const fps=meta.fps,total=Math.floor(meta.duration*fps+1e-6);
+ const maxCount=Math.min(total,Math.floor(meta.generation_frames.at(-1)*fps/24+1e-8));
+ let a=clamp(Math.round(start*fps),0,total-1),b=clamp(Math.round(end*fps),1,total);
+ if(side==='start')a=clamp(a,Math.max(0,b-maxCount),b-1);
+ else{b=clamp(b,a+1,Math.min(total,a+maxCount));}
  return {start:a/fps,end:b/fps};
 }
 export const clock=t=>{const m=Math.floor(t/60),s=t-m*60;return `${String(m).padStart(2,'0')}:${s.toFixed(3).padStart(6,'0')}`;};
@@ -88,15 +87,17 @@ class EditTimeline{
   const others=this.studio.config.refs.filter(r=>r.kind==='video'&&r.name);
   const refs=others.length?await Promise.all(others.map(r=>this.studio.request('/dogma/h3/v2/edit/metadata?'+new URLSearchParams({name:r.name})))):[];
   if(refs.some(r=>r.duration<2||r.duration>15))throw new Error('Ogni video reference aggiuntivo deve durare da 2 a 15 secondi.');
-  const budget=15-refs.reduce((sum,r)=>sum+r.duration,0),minimum=Math.max(107,...refs.map(r=>Math.floor((r.duration*24-5)/17)*17+5));
-  const m={...base,generation_frames:Array.from({length:15},(_,i)=>107+17*i).filter(n=>n>=minimum&&n/24<=budget+1e-8)};
+  const budget=15-refs.reduce((sum,r)=>sum+r.duration,0),minimum=Math.max(5,...refs.map(r=>Math.floor((r.duration*24-5)/17)*17+5));
+  const m={...base,generation_frames:Array.from({length:21},(_,i)=>5+17*i).filter(n=>n>=minimum&&n/24<=budget+1e-8)};
   if(this.closed)return;
+  if(!m.generation_frames.length)throw new Error('Le reference video non lasciano spazio per la selezione: accorciale o rimuovile.');
   this.meta=m;this.studio.editMeta={...base,source:this.config.source};
   Object.assign(this.config,snapSelection(this.config.start,this.config.end,m));this.studio.save();
   this.viewStart=0;this.span=Math.min(m.duration,Math.max(20,this.config.end-this.config.start+6));
   this.viewStart=clamp(this.config.start-2,0,m.duration-this.span);
   const v=this.video=el('video','','dg-edit-player');v.controls=true;v.preload='metadata';v.playsInline=true;
-  v.src=url('/view',{filename:this.config.source,type:'input'});this.root.append(v);
+  const path=this.config.source.replaceAll('\\','/'),split=path.lastIndexOf('/');
+  v.src=url('/view',{filename:path.slice(split+1),subfolder:split<0?'':path.slice(0,split),type:'input'});this.root.append(v);
   v.addEventListener('error',()=>this.info.textContent='Il browser non riproduce questo codec. Le miniature restano disponibili; per l’anteprima live usa un MP4 H.264.');
   this.info=el('p');this.root.append(this.info);
   const controls=el('div','','dg-edit-controls');
@@ -117,7 +118,7 @@ class EditTimeline{
    h.className='dg-edit-handle';h.setAttribute('role','slider');h.setAttribute('aria-label',label);h.title=label;
    h.addEventListener('pointerdown',e=>this.drag(e,side),{signal:this.abort.signal});
    h.addEventListener('keydown',event=>{if(!['ArrowLeft','ArrowRight'].includes(event.key))return;event.preventDefault();
-    const delta=(event.key==='ArrowLeft'?-1:1)*17/24;this.select(side==='start'?this.config.start+delta:this.config.start,side==='end'?this.config.end+delta:this.config.end,side);});
+    const delta=(event.key==='ArrowLeft'?-1:1)/m.fps;this.select(side==='start'?this.config.start+delta:this.config.start,side==='end'?this.config.end+delta:this.config.end,side);});
    track.append(h);
   }
   this.band.addEventListener('pointerdown',e=>this.drag(e,'move'),{signal:this.abort.signal});
@@ -128,13 +129,14 @@ class EditTimeline{
   this.startInput=studioField('Da · secondi','start');this.endInput=studioField('A · secondi','end');
   function studioField(label,key){const input=timelinePlaceholder();return input;
    function timelinePlaceholder(){
-    const wrap=el('label',label,'dg-field'),i=el('input');i.type='number';i.min=0;i.max=m.duration;i.step=1/m.fps;wrap.append(i);times.append(wrap);
-    i.onchange=()=>{const x=Number(i.value);if(!Number.isFinite(x))return;const c=config;
+    const wrap=el('label',label,'dg-field'),i=el('input');i.type='text';i.inputMode='decimal';wrap.append(i);times.append(wrap);
+    i.onchange=()=>{const value=i.value.trim().replace(',','.');const x=Number(value);if(!value||!Number.isFinite(x)){i.setCustomValidity('Inserisci un tempo in secondi.');i.reportValidity();return;}i.setCustomValidity('');const c=config;
      Object.assign(c,snapSelection(key==='start'?x:c.start,key==='end'?x:c.end,m,key));
-     studio.save();studio.editTimeline.paint(false);studio.editTimeline.seek(key==='start'?c.start:Math.max(c.start,c.end-1/m.fps));};return i;
+     studio.save();studio.editTimeline.paint(false);studio.editTimeline.seek(key==='start'?c.start:Math.max(c.start,c.end-1/m.fps));};
+    i.oninput=()=>i.setCustomValidity('');i.onkeydown=event=>{if(event.key==='Enter'){event.preventDefault();i.blur();}};return i;
    }
   }
-  this.root.append(el('small',`Trascina i bordi arancioni per cambiare la durata; trascina il centro per spostare l’intervallo. Usa la barra del video completo e “Inizia la selezione da qui” per raggiungere scene lontane. Durate H3 disponibili con queste reference: ${(m.generation_frames[0]/24).toFixed(2)}–${(m.generation_frames.at(-1)/24).toFixed(2)} s, a scatti. H3 genera a 24 fps: l’export mantiene i timestamp del sorgente senza interpolazione.`));
+  this.root.append(el('small',`Trascina i bordi o inserisci i secondi, anche con la virgola. Selezione libera fino a ${(m.generation_frames.at(-1)/24).toFixed(2)} s, con precisione di un fotogramma e senza minimo di 4 secondi. H3 calcola i fotogrammi aggiuntivi necessari; nell’export viene sostituito solo l’intervallo scelto.`));
   v.addEventListener('timeupdate',()=>{
    if(this.playingSelection&&v.currentTime>=this.config.end){v.pause();this.playingSelection=false;}
    this.playhead.style.left=clamp((v.currentTime-this.viewStart)/this.span*100,0,100)+'%';
@@ -149,7 +151,7 @@ class EditTimeline{
  select(a,b,side){Object.assign(this.config,snapSelection(a,b,this.meta,side));this.studio.save();this.paint(false);this.seek(side==='start'?this.config.start:this.config.end-1/this.meta.fps);}
  drag(event,side){event.preventDefault();event.stopPropagation();const target=event.currentTarget;target.setPointerCapture(event.pointerId);
   const initial={a:this.config.start,b:this.config.end,t:this.timeAt(event.clientX)};
-  const move=ev=>{if(side==='move'){const delta=this.timeAt(ev.clientX)-initial.t;this.select(initial.a+delta,initial.b+delta,'end');}
+  const move=ev=>{if(side==='move'){const delta=clamp(this.timeAt(ev.clientX)-initial.t,-initial.a,this.meta.duration-initial.b);this.select(initial.a+delta,initial.b+delta,'end');}
    else this.select(side==='start'?this.timeAt(ev.clientX):this.config.start,side==='end'?this.timeAt(ev.clientX):this.config.end,side);};
   const end=()=>{target.removeEventListener('pointermove',move);target.removeEventListener('pointerup',end);target.removeEventListener('pointercancel',end);};
   target.addEventListener('pointermove',move);target.addEventListener('pointerup',end);target.addEventListener('pointercancel',end);

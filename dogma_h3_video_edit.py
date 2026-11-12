@@ -11,9 +11,9 @@ import tempfile
 import time
 from fractions import Fraction
 
-# Official output range 4–15 s, intersected with Comfy's 17k+5 grid.
+# Native H3 temporal grid; the selected interval is independent of this grid.
 # 362/24 exceeds the 15 s reference budget; keep the source reference <=15 s.
-EDIT_FRAMES = tuple(range(107, 346, 17))
+EDIT_FRAMES = tuple(range(5, 346, 17))
 
 
 def edit_defaults():
@@ -76,18 +76,19 @@ def plan_interval(meta, start, end):
     if not all(math.isfinite(v) for v in (start, end)):
         raise ValueError('Selezione temporale non valida.')
     fps = Fraction(meta['fps_ratio'])
-    # Same grid used by the mouse handles. Frames are used for the visible
-    # selection; inference has at most one source-frame of extra tail, cropped.
     start_frame = round(start * float(fps))
     end_frame = round(end * float(fps))
     count = end_frame-start_frame
-    choices = {int(Fraction(n,24)*fps): n for n in EDIT_FRAMES}
-    if count not in choices:
-        raise ValueError('La durata non è sulla griglia H3: regola le maniglie nella timeline.')
     start, end = start_frame/float(fps), end_frame/float(fps)
+    if count < 1:
+        raise ValueError('Seleziona almeno un fotogramma.')
     if start < 0 or end > meta['duration'] + 1e-6:
         raise ValueError('La selezione supera il video sorgente.')
-    return dict(start=start, end=end, duration=end-start, generation_frames=choices[count],
+    required = math.ceil(count / float(fps) * 24 - 1e-8)
+    generation_frames = next((n for n in EDIT_FRAMES if n >= required), None)
+    if generation_frames is None:
+        raise ValueError('La selezione supera la durata disponibile per H3.')
+    return dict(start=start, end=end, duration=end-start, generation_frames=generation_frames,
                 source_frames=count, start_frame=start_frame, end_frame=end_frame)
 
 
@@ -108,7 +109,7 @@ def check_config(c, input_file):
     videos = [r for r in c['refs'] if r.get('kind') == 'video']
     if len(videos)>2 or len(c['refs'])>11:
         raise ValueError('Il sorgente occupa Video 1: restano 2 video e 9 immagini reference (11 file).')
-    duration = plan['generation_frames']/24
+    reference_duration = 0.
     for r in c['refs']:
         if r.get('kind') not in ('image','video') or not r.get('name'):
             raise ValueError('Carica o rimuovi le reference vuote.')
@@ -117,16 +118,16 @@ def check_config(c, input_file):
             ref = probe(path)
             if not 2 <= ref['duration'] <= 15:
                 raise ValueError('Ogni video reference aggiuntivo deve durare da 2 a 15 secondi.')
-            if max(5,math.floor((ref['duration']*24-5)/17)*17+5)>plan['generation_frames']:
-                raise ValueError('Un video reference è più lungo del tratto editato: accorcialo prima di caricarlo.')
-            duration += ref['duration']
+            plan['generation_frames'] = max(plan['generation_frames'], max(5,math.floor((ref['duration']*24-5)/17)*17+5))
+            reference_duration += ref['duration']
+    duration = plan['generation_frames']/24 + reference_duration
     if duration>15+1e-6:
         raise ValueError(f'Sorgente selezionato + video reference: {duration:.2f} s. Il limite H3 è 15 s totali; accorcia la selezione o le reference.')
     ffmpeg()  # Fail before loading models.
     return meta,plan
 
 
-def segment_tensor(path, start, n, width, height, interrupt=lambda:None):
+def segment_tensor(path, start, n, width, height, interrupt=lambda:None, end=None, source_fps=24):
     """Seek near the selection; sample by timestamps, with no temporal stretch."""
     import av
     import numpy as np
@@ -135,7 +136,8 @@ def segment_tensor(path, start, n, width, height, interrupt=lambda:None):
         stream = container.streams.video[0]
         origin = float(stream.start_time*stream.time_base) if stream.start_time is not None else 0.
         container.seek(int((origin+start)/float(stream.time_base)),stream=stream,backward=True)
-        targets = [origin+start+i/24 for i in range(n)]
+        last = max(start, end-1/source_fps) if end is not None else float('inf')
+        targets = [origin+min(start+i/24,last) for i in range(n)]
         result = torch.empty((n,height,width,3),dtype=torch.float32)
         prev = None; pos = 0
         def put(frame):
@@ -247,7 +249,8 @@ def run_edit(c,root,st,update,progress,uid):
     width=math.ceil(meta['width']/32)*32; height=math.ceil(meta['height']/32)*32
     n=plan['generation_frames']
     update('running','Lettura della sola selezione…',active='edit')
-    selected=segment_tensor(source,plan['start'],n,width,height,mm.throw_exception_if_processing_interrupted)
+    selected=segment_tensor(source,plan['start'],n,width,height,mm.throw_exception_if_processing_interrupted,
+                            end=plan['end'],source_fps=meta['fps'])
     images={};videos={'ref_video_1':selected}
     for r in c['refs']:
         if r['kind']=='image':images[f'ref_image_{len(images)+1}']=director.load_image(r['name'])

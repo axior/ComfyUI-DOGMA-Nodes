@@ -1,13 +1,16 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { renderEditor, renderEditResults } from './dogma_h3_video_edit.js?v=video-edit-1';
+import { renderEditor, renderEditResults } from './dogma_h3_video_edit.js?v=preview-timing-2';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=video-edit-1',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=preview-timing-2',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
-const inputURL=name=>api.apiURL('/view?'+new URLSearchParams({filename:name,type:'input'}));
+const inputURL=name=>{
+ const path=name.replaceAll('\\','/'),split=path.lastIndexOf('/');
+ return api.apiURL('/view?'+new URLSearchParams({filename:path.slice(split+1),subfolder:split<0?'':path.slice(0,split),type:'input'}));
+};
 const viewURL=file=>api.apiURL('/view?'+new URLSearchParams(file));
 const film=file=>{const v=el('video');v.controls=true;v.loop=true;v.playsInline=true;v.preload='metadata';v.src=viewURL(file);return v;};
 let active=null;
