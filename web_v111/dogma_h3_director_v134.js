@@ -1,14 +1,15 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-47';
+import {actionButton,decorateActions,setAction} from './dogma_h3_actions.js?v=studio-1-0-48';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-48';
 
-import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-47';
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-48';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-47',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-48',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
-const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
+const button=actionButton;
 const film=file=>mediaPreview(file,{loop:true}).root;
 let active=null;
 
@@ -80,6 +81,7 @@ export class DirectorStudio {
  }
  switchTask(previous){
   const c=this.config,old=this.family(previous),next=this.family(c.task);
+  if(c.task!=='edit'&&c.exploration==='loras')c.exploration='prompts';
   if(old!==next){
    c.sampling_banks ||= {};c.sampling_banks[old]={draft:clone(c.draft),finish:clone(c.finish)};
    const saved=c.sampling_banks[next];
@@ -133,7 +135,7 @@ export class DirectorStudio {
   }
  }
  close(){
-  this.editTimeline?.destroy();this.editTimeline=null;this.editCompare?.destroy();this.editCompare=null;this.maskEditor?.destroy();this.maskEditor=null;
+  this.restitchPanel?.destroy();this.restitchPanel=null;this.editTimeline?.destroy();this.editTimeline=null;this.editCompare?.destroy();this.editCompare=null;this.maskEditor?.destroy();this.maskEditor=null;
   releaseMedia(this.dialog);
   ++this.epoch;clearInterval(this.poll);this.recovering=false;
   for(const c of this.requests)c.abort();this.requests.clear();
@@ -209,12 +211,12 @@ export class DirectorStudio {
   this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting||this.uploads>0);
   this.dialog?.querySelectorAll('[data-edit-finish]').forEach(b=>{
    b.disabled=this.promoting||this.submitting||this.uploads>0||!!this.editFinishWaiting||this.pending&&this.data.edit_batch?.phase==='finish';
-   b.textContent=this.pending&&this.data.edit_batch?.phase!=='finish'?'Usa questo provino e salta gli altri':'Prepara questo provino alla dimensione originale';
+   setAction(b,this.pending&&this.data.edit_batch?.phase!=='finish'?'Usa questo provino e salta gli altri':'Prepara questo provino alla dimensione originale');
   });
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
   // Always allow a fresh queue check: UI state can lag behind a failed job.
-  const stop=this.dialog?.querySelector('[data-stop]');if(stop){stop.disabled=!!this.stopping;stop.textContent=this.pending?'Interrompi':'Verifica / interrompi';}
+  const stop=this.dialog?.querySelector('[data-stop]');if(stop){stop.disabled=!!this.stopping;setAction(stop,this.pending?'Interrompi':'Verifica / interrompi');}
  }
  async queue(action){
   if(this.pending||this.submitting||this.uploads>0)return;this.submitting=true;this.armSound();
@@ -310,7 +312,7 @@ export class DirectorStudio {
   const draw=()=>{
    [...d.children].slice(1).forEach(e=>e.remove());d.firstChild.textContent=`${title} · ${stack.length}`;
    stack.forEach((l,i)=>{const row=el('div','','dg-lora-row');this.field(row,'LoRA',l,'name',{options:['',...this.catalog.loras]});this.field(row,'Potenza',l,'strength',{type:'number',step:.01,min:-10,max:10});row.append(button('Rimuovi',()=>{stack.splice(i,1);this.save();draw();}));d.append(row);});
-   d.append(button('+ Aggiungi LoRA',()=>{stack.push({name:'',strength:1});this.save();draw();}));
+   d.append(button('+ Aggiungi LoRA',()=>{stack.push({name:'',strength:1});this.save();draw();}));decorateActions(d);
   };draw();
  }
  asset(parent,title,obj,key,kind='image',remove,onUpload){
@@ -327,7 +329,7 @@ export class DirectorStudio {
   const scroll=this.dialog.querySelector('main')?.scrollTop||0;
   const expanded=new Map();
   for(const d of this.dialog.querySelectorAll('details')){const key=d.querySelector('summary')?.textContent.replace(/ · \d+$/,'');if(!expanded.has(key))expanded.set(key,[]);expanded.get(key).push(d.open);}
-  this.editTimeline?.destroy();this.editTimeline=null;this.editCompare?.destroy();this.editCompare=null;this.maskEditor?.destroy();this.maskEditor=null;
+  this.restitchPanel?.destroy();this.restitchPanel=null;this.editTimeline?.destroy();this.editTimeline=null;this.editCompare?.destroy();this.editCompare=null;this.maskEditor?.destroy();this.maskEditor=null;
   releaseMedia(this.dialog);
   this.folderPanel=null;this.dialog.querySelectorAll('video').forEach(v=>v.pause());this.dialog.replaceChildren();
   this.dialog.append(this.header());
@@ -338,7 +340,7 @@ export class DirectorStudio {
   const stop=button('Interrompi',()=>this.stop().catch(e=>{this.data.message='Interruzione non confermata: '+e.message;this.status();}));stop.dataset.stop='';nav.append(stop);const state=el('div','','dg-state');state.append(el('div','','dg-status'),el('progress','','dg-progress'),el('small','','dg-progress-label'));this.dialog.append(nav,state);
   const body=el('main');this.dialog.append(body);
   if(this.page==='prepare')this.prepare(body);if(this.page==='choose'){if(isEdit)renderEditTrials(this,body);else this.choose(body);}if(this.page==='develop')this.develop(body);if(this.page==='finish'){if(isEdit)renderEditResults(this,body);else this.finish(body);}
-  const foot=el('footer','Salvataggio automatico della sessione · Cartella output configurabile in Prepara · Esc torna a Comfy');this.dialog.append(foot);this.status();
+  const foot=el('footer','Salvataggio automatico della sessione · Cartella output configurabile in Prepara · Esc torna a Comfy');this.dialog.append(foot);decorateActions(this.dialog);this.status();
   for(const d of this.dialog.querySelectorAll('details')){const key=d.querySelector('summary')?.textContent.replace(/ · \d+$/,'');const states=expanded.get(key);if(states?.length)d.open=states.shift();}
   body.scrollTop=scroll;
  }

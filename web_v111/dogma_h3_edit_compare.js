@@ -1,7 +1,8 @@
-import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-47';
-import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-47';
+import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-48';
+import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-48';
+import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-48';
 const el=(tag,text='')=>{const e=document.createElement(tag);e.textContent=text;return e;};
-const button=(text,fn)=>{const e=el('button',text);e.type='button';e.onclick=fn;return e;};
+const button=actionButton;
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const clock=t=>`${String(Math.floor(t/60)).padStart(2,'0')}:${(t%60).toFixed(3).padStart(6,'0')}`;
 
@@ -12,7 +13,7 @@ export class EditComparison{
   if(!source){root.append(el('p','Il sorgente di questa versione non è registrato.'),mediaPreview(item.video,{loop:true}).root);return;}
   const items=[...(studio.data.edit_trials||[]),...(studio.data.edits||[])];
   const label=x=>{
-   if(x.segment_only)return `${x.label} · seed ${x.seed}`;
+   if(x.segment_only)return `${x.label} · ${x.config?.exploration==='loras'?loraLabel(x)+' · ':''}seed ${x.seed}`;
    if(x.development?.method==='preserve')return `Finale da ${x.origin_trial_label||'provino'} · edit mantenuto · seed ${x.seed}`;
    const sampling=x.sampling||x.config?.edit;
    return `Finale da ${x.origin_trial_label||items.find(t=>t.id===x.trial)?.label||'provino precedente'} · seed ${x.seed}${sampling?' · '+(sampling.turbo?'Turbo':'standard')+' '+sampling.steps:''}`;
@@ -42,10 +43,10 @@ export class EditComparison{
   const modes=el('div');modes.className='dg-edit-controls';
   for(const [mode,label]of[['pair','Affiancati'],['original','Solo A'],['result','Solo B']])modes.append(button(label,()=>{studio.editCompareMode=mode;pair.dataset.mode=mode;}));
   const actions=el('div');actions.className='dg-edit-controls';
-  this.playButton=button('Riproduci edit',()=>this.play(true));this.fullButton=button('Riproduci tutto',()=>this.play(false));
+  this.playButton=button('Riproduci edit',()=>this.toggle(true));this.fullButton=button('Riproduci tutto',()=>this.toggle(false));
   this.fullButton.hidden=this.left.offset>0||this.right.offset>0||this.left.end!==Infinity&&this.left.end<item.duration||this.right.end<item.duration;
   const loopLabel=el('label','Ripeti in loop'),loop=el('input');loop.type='checkbox';loop.checked=studio.editLoop!==false;loop.onchange=()=>{studio.editLoop=loop.checked;};loopLabel.prepend(loop);
-  actions.append(this.playButton,this.fullButton,button('Pausa',()=>this.pause()),button('Vai all’edit',()=>this.seek(item.selection.start)),button('−1 fotogramma',()=>this.step(-1)),button('+1 fotogramma',()=>this.step(1)),loopLabel);
+  actions.append(this.playButton,this.fullButton,button('Vai all’edit',()=>this.seek(item.selection.start)),button('−1 fotogramma',()=>this.step(-1)),button('+1 fotogramma',()=>this.step(1)),loopLabel);
   this.slider=el('input');this.slider.type='range';this.slider.step='any';this.slider.setAttribute('aria-label','Posizione comune del confronto');this.slider.oninput=()=>this.seek(Number(this.slider.value));
   this.position=el('p');this.notice=el('small');this.notice.setAttribute('role','status');
   const sound=el('label','Audio del confronto');sound.className='dg-field';const audio=el('select');
@@ -87,6 +88,8 @@ export class EditComparison{
   this.target=clamp(this.meta?frameTime(this.meta,Math.min(frameCount(this.meta)-1,frameIndex(this.meta,time))):time,low,last);this.restore();
  }
  step(delta){if(this.meta)this.seek(stepTime(this.meta,this.a.currentTime+this.left.offset,delta));}
+ toggle(selection){if((this.playing||this.starting||this.resumeAfterBuffer)&&this.selectionOnly===selection){this.pause();return;}this.play(selection);}
+ playbackLabel(){if(!this.playButton)return;setAction(this.playButton,(this.playing||this.starting||this.resumeAfterBuffer)&&this.selectionOnly?'Pausa edit':'Riproduci edit');setAction(this.fullButton,(this.playing||this.starting||this.resumeAfterBuffer)&&!this.selectionOnly?'Pausa video':'Riproduci tutto');}
  async play(selectionOnly,restart=true){
   if(this.closed||!this.meta||this.a.error||this.b.error)return;
   const [low,high]=this.bounds(selectionOnly);if(!(high>low)){this.notice.textContent='Nessun tratto comune da riprodurre.';return;}
@@ -94,6 +97,7 @@ export class EditComparison{
   this.pause();this.selectionOnly=selectionOnly;this.atEnd=false;this.resumeWanted=false;
   if(restart&&(atEnd||now<low||now>=high-.001||this.a.ended||this.b.ended)){this.target=low;this.restore();}
   const run=this.playRun;this.starting=true;this.notice.textContent='';
+  this.playbackLabel();
   if(Math.abs(this.b.currentTime+this.right.offset-this.a.currentTime-this.left.offset)>.001)this.b.currentTime=this.a.currentTime+this.left.offset-this.right.offset;
   const wait=v=>new Promise((resolve,reject)=>{
    if(v.readyState>=2&&!v.seeking){resolve();return;}
@@ -106,7 +110,7 @@ export class EditComparison{
   try{
    await Promise.all([wait(this.a),wait(this.b)]);if(this.closed||run!==this.playRun)return;
    this.playing=true;await Promise.all([this.a.play(),this.b.play()]);if(this.closed||run!==this.playRun)return;
-   this.starting=false;this.tick();
+   this.starting=false;this.playbackLabel();this.tick();
   }catch(e){if(!this.closed&&run===this.playRun){this.pause();this.notice.textContent='Riproduzione non avviata: attendi il caricamento e riprova.';}}
  }
  reachEnd(){
@@ -126,7 +130,7 @@ export class EditComparison{
   if(Math.abs(drift)>Math.max(frame,.04))this.b.currentTime=t-this.right.offset;else this.b.playbackRate=clamp(1-drift*.5,.97,1.03);
   this.draw();this.raf=requestAnimationFrame(()=>this.tick());
  }
- pause(clearResume=true){this.playRun=(this.playRun||0)+1;this.starting=false;this.playing=false;if(clearResume){this.resumeAfterBuffer=false;this.resumeWanted=false;}cancelAnimationFrame(this.raf);this.a?.pause();this.b?.pause();if(this.b)this.b.playbackRate=1;}
+ pause(clearResume=true){this.playRun=(this.playRun||0)+1;this.starting=false;this.playing=false;if(clearResume){this.resumeAfterBuffer=false;this.resumeWanted=false;}cancelAnimationFrame(this.raf);this.a?.pause();this.b?.pause();if(this.b)this.b.playbackRate=1;this.playbackLabel();}
  draw(){const t=this.a.currentTime+this.left.offset;this.target=t;this.slider.value=t;this.position.textContent=`${clock(t)} · edit ${clock(this.item.selection.start)} → ${clock(this.item.selection.end)}${this.meta?' · fotogramma '+frameIndex(this.meta,t):''}`;}
  destroy(){
   if(this.closed)return;

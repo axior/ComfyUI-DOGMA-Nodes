@@ -65,7 +65,7 @@ def parse_config(raw):
     if c['action'] not in ('draft','develop','finish'): raise ValueError('Azione non valida.')
     if c['task'] not in ('i2v','t2v','ref2v','edit'): raise ValueError('Scegli I2V, T2V, Ref2Video o Video Edit.')
     if c['task']=='edit' and c['action'] not in ('draft','finish'): raise ValueError('Video Edit usa provini e rigenerazione originale.')
-    if c['exploration'] not in ('seeds','prompts'): raise ValueError('Modalità provini non valida.')
+    if c['exploration'] not in ('seeds','prompts','loras'): raise ValueError('Modalità provini non valida.')
     if not 1<=int(c['count'])<=10: raise ValueError('Scegli da 1 a 10 provini.')
     if not 0.2<=float(c['seconds'])<=15: raise ValueError('Durata: da 0,2 a 15 secondi.')
     if not 256<=int(c['long_edge'])<=1536: raise ValueError('Lato lungo provini: 256–1536 px.')
@@ -97,11 +97,12 @@ def parse_config(raw):
 
 def make_plan(c):
     common=c['prompt'].strip()
-    if c['exploration']=='prompts':
+    if c['exploration'] in ('prompts','loras'):
         variants=c['variants']
         if not 1<=len(variants)<=10: raise ValueError('Inserisci da 1 a 10 schede prompt.')
-        if any(not v.get('text','').strip() for v in variants): raise ValueError('Ogni scheda prompt deve contenere testo.')
-        return [dict(prompt='\n\n'.join(x for x in (common,v['text'].strip()) if x),
+        if c['exploration']=='prompts' and not common and any(not v.get('text','').strip() for v in variants): raise ValueError('Ogni scheda prompt deve contenere testo oppure usare le istruzioni comuni.')
+        if c['exploration']=='loras' and not common:raise ValueError('Scrivi le istruzioni di edit comuni prima di confrontare le LoRA.')
+        return [dict(prompt='\n\n'.join(x for x in (common,v.get('text','').strip()) if x),
                      seed=int(c['seed']),loras=c['common_loras']+v.get('loras',[])) for v in variants]
     if not common: raise ValueError('Scrivi il prompt prima di generare.')
     return [dict(prompt=common,seed=(int(c['seed'])+i)%(2**53-1),
@@ -618,6 +619,10 @@ def register_routes():
         origin=request.headers.get('Origin')
         if origin and urlparse(origin).netloc!=request.host:
             raise web.HTTPForbidden(text='Origine non valida.')
+
+    import sys
+    from .dogma_h3_restitch import register_routes as register_restitch
+    PromptServer.instance.app.on_cleanup.append(register_restitch(routes,sys.modules[__name__],local_request))
 
     @routes.post('/dogma/h3/v2/open-folder')
     async def open_folder(request):

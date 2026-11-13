@@ -404,19 +404,22 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
             info=dict(audio_copied=False,fps=meta['fps'],width=content_width,height=content_height)
         else:
             info=compose(source,patch,final,meta,plan,c['edit']['fade'],interrupt,mask_path=mask_path,settings=settings)
+    except BaseException:
+        patch.unlink(missing_ok=True)
+        if latent_path:latent_path.unlink(missing_ok=True)
+        raise
     finally:
-        if not trial:patch.unlink(missing_ok=True)
         mixed.unlink(missing_ok=True)
     timings['export']=round(time.monotonic()-exported,2)
     saved_path,export_error=(str(final.resolve()),None) if trial else export_final(director,final,c)
     return dict(id=uuid.uuid4().hex,label='Provino edit' if trial else 'Video completo · edit applicato',video=director.view_file(final),
                 saved_path=saved_path,export_error=export_error,complete=True,kind='edit_trial' if trial else 'edit',
                 selection=plan,duration=plan['duration'] if trial else meta['duration'],config=copy.deepcopy(c),
-                segment_only=trial,prompt=c['prompt'],seed=int(c['seed']),sampling={k:effective[k] for k in SAMPLING_KEYS if k in effective},mask_report=mask_report,
+                segment_only=trial,prompt=c['prompt'],seed=int(c['seed']),loras=copy.deepcopy(c['common_loras']),sampling={k:effective[k] for k in SAMPLING_KEYS if k in effective},mask_report=mask_report,
                 elapsed_seconds=round(time.monotonic()-started,2),timings=timings,prepared_reused=reused,
                 latent=str(latent_path.relative_to(root)) if latent_path else None,
                 latent_sha256=fingerprint(latent_path) if latent_path else None,video_sha256=fingerprint(final),development=development,
-                raw_patch=str(patch.relative_to(root)) if trial else None,raw_patch_sha256=fingerprint(patch) if trial else None,
+                raw_patch=str(patch.relative_to(root)),raw_patch_sha256=fingerprint(patch),
                 generation_width=content_width,generation_height=content_height,
                 **{**info,'timing_version':2})
 
@@ -445,6 +448,7 @@ def preserve_trial(c,root,selected,update,interrupt):
     return dict(id=uuid.uuid4().hex,complete=True,kind='edit',video=director.view_file(final),
         saved_path=saved_path,export_error=export_error,config=copy.deepcopy(c),selection=plan,segment_only=False,
         duration=meta['duration'],prompt=c['prompt'],seed=c['seed'],video_sha256=fingerprint(final),
+        raw_patch=str(raw.relative_to(root)),raw_patch_sha256=fingerprint(raw),
         generation_width=selected['width'],generation_height=selected['height'],
         development=dict(method='preserve',trial=selected['id'],input='raw_approved_generation',raw_patch_sha256=fingerprint(raw),video_sha256=fingerprint(approved)),**info)
 

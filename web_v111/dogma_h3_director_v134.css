@@ -36,3 +36,19 @@
 .dg-studio .dg-edit-compare[data-mode=original]>:last-child,.dg-studio .dg-edit-compare[data-mode=result]>:first-child{display:none}
 @media(max-width:900px){.dg-studio .dg-edit-panel>.dg-media-preview{position:relative;margin-bottom:10px}.dg-studio .dg-edit-panel>.dg-media-preview video{height:220px}}
 @media(max-width:600px){.dg-studio .dg-edit-compare{grid-template-columns:1fr}}
+
+.dg-studio .dg-icon{width:18px;height:18px;flex:0 0 18px;color:var(--orange);vertical-align:middle;pointer-events:none}
+.dg-studio button:has(>.dg-icon),.dg-studio a:has(>.dg-icon){display:inline-flex;align-items:center;justify-content:center;gap:8px}
+.dg-studio summary>.dg-icon{margin-right:8px}.dg-studio .dg-primary>.dg-icon,.dg-studio .is-active>.dg-icon{color:currentColor}
+.dg-studio .dg-edit-controls button{padding:8px 12px;font-size:13px}.dg-studio .dg-edit-controls{align-items:center;gap:6px}
+.dg-studio .dg-edit-controls button:first-of-type{border-color:#ad572c;background:#3a291f}
+.dg-studio .dg-restitch-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}
+.dg-studio button.dg-restitch-choice{display:block;min-width:0;width:100%;margin:0;padding:8px;background:#17181a;text-align:left;border:2px solid transparent}
+.dg-studio .dg-restitch-choice[aria-pressed=true]{border-color:var(--orange);background:#30231d}
+.dg-studio .dg-restitch-choice canvas{display:block;width:100%;height:clamp(95px,17vh,160px);object-fit:contain;margin:7px 0;background:#050505;border-radius:4px}
+.dg-studio .dg-restitch-choice strong{display:block;font-size:13px}.dg-studio .dg-restitch-choice small{font-size:11px}
+.dg-studio .dg-restitch-source{position:absolute!important;width:1px!important;height:1px!important;opacity:.01;pointer-events:none}
+.dg-studio .dg-restitch h3{font-size:15px;margin:18px 0 10px}.dg-studio .dg-restitch .dg-grid{max-width:700px}
+@media(max-width:1100px){.dg-studio .dg-restitch-grid{grid-template-columns:repeat(3,minmax(0,1fr))}}
+@media(max-width:750px){.dg-studio .dg-restitch-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:420px){.dg-studio .dg-restitch-grid{grid-template-columns:1fr}}

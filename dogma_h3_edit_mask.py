@@ -43,6 +43,21 @@ def composite_settings(settings):
 def composite_mask(rgb,settings):
     effective=composite_settings(settings)
     if settings.get('composite_mode','source')=='generation':return processed_mask(rgb,effective)
+    if settings.get('composite_metric')=='distance':
+        # Match the continuously offset contour used by the live restitch grid.
+        # Old exports retain their square morphology unless explicitly restitched.
+        from scipy.ndimage import distance_transform_edt
+        base=processed_mask(rgb,{**effective,'grow':0,'feather':0.})
+        support=base>0
+        if not support.any():return base
+        distance=distance_transform_edt(np.pad(support,1))[1:-1,1:-1]-distance_transform_edt(~support)
+        distance+=effective['grow']
+        radius=float(effective['feather'])
+        if radius:
+            x=np.clip(distance/radius,0,1).astype(np.float32);weight=x*x*(3-2*x)
+        else:weight=(distance>=0).astype(np.float32)
+        opacity=maximum_filter(base,size=2*effective['grow']+1,mode='constant',cval=0) if effective['grow']>0 else base
+        return opacity*weight
     alpha=processed_mask(rgb,{**effective,'feather':0.})
     radius=float(effective['feather'])
     if radius:
@@ -97,12 +112,13 @@ class FrameReader:
             self.close()
             raise ValueError('Video privo di fotogrammi leggibili.')
 
-    def at(self, second, nearest=False):
+    def at(self, second, nearest=False, size=None):
         while self.following is not None and float(self.following.time)-self.origin <= second+1e-6:
             self.current = self.following
             self.following = next(self.frames, None)
         selected=self.current
         if nearest and self.following is not None and abs(float(self.following.time)-self.origin-second)<abs(float(self.current.time)-self.origin-second):selected=self.following
+        if size is not None:return selected.reformat(width=size[0],height=size[1],format='rgb24').to_ndarray()
         return selected.to_ndarray(format='rgb24')
 
     def close(self):

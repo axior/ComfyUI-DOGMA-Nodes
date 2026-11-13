@@ -1,12 +1,14 @@
-import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-47';
-import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-47';
+import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-48';
+import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-48';
 import { api } from '../../scripts/api.js';
-import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-47';
-import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-47';
-export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-47';
+import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-48';
+import {RestitchPanel} from './dogma_h3_restitch.js?v=studio-1-0-48';
+import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-48';
+import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-48';
+export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-48';
 
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
-const button=(text,fn)=>{const e=el('button',text);e.type='button';e.onclick=fn;return e;};
+const button=actionButton;
 const url=(path,params)=>api.apiURL(path+'?'+new URLSearchParams(params));
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 export const clock=t=>{const m=Math.floor(t/60),s=t-m*60;return `${String(m).padStart(2,'0')}:${s.toFixed(3).padStart(6,'0')}`;};
@@ -47,7 +49,7 @@ export function renderEditor(studio,body){
  studio.field(prompt,'Seed',c,'seed',{type:'number',min:0,max:9007199254740990,step:1});
  const anchors=studio.field(prompt,'Mantieni i fotogrammi ai due estremi come guida',e,'anchor_edges',{type:'checkbox',hint:e.mask?.enabled?'Con maschera attiva gli estremi non vengono forzati: anche lì può essere richiesta una modifica.':'Aiuta il raccordo. Disattiva se vuoi modificare anche il primo e l’ultimo fotogramma.'});anchors.disabled=!!e.mask?.enabled;
  studio.field(prompt,'Raccordo con l’originale · secondi per lato',e,'fade',{type:'number',min:0,max:.5,step:.025,hint:'Sfumatura dentro la selezione. 0 = taglio netto. Una sfumatura troppo lunga può creare doppie immagini.'});
- studio.loras(prompt,c.common_loras,'LoRA per questo edit');
+ studio.loras(prompt,c.common_loras,'LoRA comuni a tutti i provini edit');
  const advanced=el('details','','dg-card');advanced.append(el('summary','Modelli e campionamento personalizzato'));body.append(advanced);
  studio.field(advanced,'Checkpoint Ref2VA',c.models,'ref2v',{options:['',...studio.catalog.models]});
  for(const [key,label,options]of[['clip','Text encoder',studio.catalog.clip],['vae','Video VAE',studio.catalog.vae],['audio','Audio VAE',studio.catalog.vae]])studio.field(advanced,label,c.models,key,{options});
@@ -58,13 +60,14 @@ export function renderEditor(studio,body){
  studio.field(trials,'Velocità dei provini',e,'trial_mode',{options:[['fast','Rapido · Turbo Ref2Video · 4 passaggi'],['same','Personalizzato · parametri avanzati']],hint:'Il rapido usa la LoRA Turbo Ref2Video installata. Il campionamento alla dimensione originale si sceglie nella scheda del provino.'});
  studio.field(trials,'Dimensione dei provini · lato lungo',e,'trial_edge',{options:[[256,'256 px · più leggero'],[384,'384 px'],[512,'512 px']],change:()=>studio.render()});
  studio.field(trials,'Anteprima durante il calcolo dei provini',e,'trial_live_preview',{type:'checkbox',hint:'Disattivata per velocizzare i provini. Il video completo del provino compare appena pronto.'});
- studio.field(trials,'Confronta',c,'exploration',{options:[['seeds','Seed diversi · stesso prompt'],['prompts','Prompt diversi · stesso seed']],change:()=>studio.render()});
+ studio.field(trials,'Confronta',c,'exploration',{options:[['seeds','Seed diversi · stesso prompt'],['prompts','Prompt diversi · stesso seed'],['loras','LoRA diverse · stesso prompt e seed']],change:()=>studio.render()});
  if(c.exploration==='seeds')studio.field(trials,'Numero di provini',c,'count',{type:'number',min:1,max:10,step:1});
  else{
-  c.variants.forEach((variant,i)=>{const row=studio.section(trials,`Variante prompt ${i+1}`);studio.field(row,'Istruzioni aggiuntive',variant,'text',{multi:true,rows:4});
+  c.variants.forEach((variant,i)=>{const row=studio.section(trials,`${c.exploration==='loras'?'Variante LoRA':'Variante prompt'} ${i+1}`);studio.field(row,'Trigger o istruzioni aggiuntive · facoltative',variant,'text',{multi:true,rows:3});
+   variant.loras??=[];studio.loras(row,variant.loras,'LoRA della variante');
    if(c.variants.length>1)row.append(button('Rimuovi variante',()=>{c.variants.splice(i,1);studio.save();studio.render();}));
   });
-  if(c.variants.length<10)trials.append(button('+ Variante prompt',()=>{c.variants.push({text:'',loras:[]});studio.save();studio.render();}));
+  if(c.variants.length<10)trials.append(button('+ Variante',()=>{c.variants.push({text:'',loras:[]});studio.save();studio.render();}));
  }
  trials.append(el('p',`I provini elaborano solo la selezione fino a ${e.trial_edge} px. In modalità rapida il primo caricamento e la prima preparazione restano necessari; i seed successivi riusano la preparazione comune. Scegli un provino per rigenerarlo alla dimensione originale con lo stesso prompt, seed e maschera.`));
  const go=button(`Genera provini edit a ${e.trial_edge} px`,()=>studio.queue('draft'));go.className='dg-primary';go.dataset.queue='';body.append(go);
@@ -79,11 +82,13 @@ export function renderEditTrials(studio,body){
  const selected=items.find(x=>x.id===studio.editTrialId)||items.at(-1);studio.editTrialId=selected.id;
  const versions=studio.section(body,'Provini edit disponibili');
  for(const [i,item]of items.entries()){
-  const choose=button(`Provino ${i+1} · seed ${item.seed}`,()=>{studio.editTrialId=item.id;studio.editComparePosition=null;studio.render();});
+  const choose=button(`Provino ${i+1} · ${item.config?.exploration==='loras'?loraLabel(item):'seed '+item.seed}`,()=>{studio.editTrialId=item.id;studio.editComparePosition=null;studio.render();});
   if(item.id===selected.id)choose.className='is-active';versions.append(choose);
  }
  const card=studio.section(body,`${selected.label} · ${selected.width} × ${selected.height}`);
  card.append(el('p',`Seed ${selected.seed} · selezione ${clock(selected.selection.start)} → ${clock(selected.selection.end)}`));
+ const stack=selected.loras||selected.config.common_loras||[];
+ if(stack.length){const l=el('details');l.append(el('summary',`LoRA del provino · ${stack.length}`));for(const entry of stack)l.append(el('small',`${entry.name} · peso ${entry.strength??1}${entry.enabled===false?' · disattivata':''}`));card.append(l);}
  if(selected.sampling)card.append(el('small',`${selected.sampling.steps} passaggi${selected.sampling.turbo?' · Turbo':''}${selected.elapsed_seconds!=null?' · '+selected.elapsed_seconds.toFixed(1)+' s':''}${selected.prepared_reused?' · preparazione riutilizzata':''}`));
  if(selected.timing_repaired)card.append(el('p','Fotogrammi recuperati dai latenti salvati. Il confronto usa l’anteprima ricostruita da quei dati, senza una nuova generazione.'));
  else if(selected.timing_version!==2)card.append(el('small',selected.latent?'Questo provino precedente verrà recuperato dai latenti salvati per correggere la fluidità, senza rilanciare MiniMax.':'Questo vecchio provino non contiene i dati necessari al recupero dei fotogrammi: genera un nuovo provino.'));
@@ -145,6 +150,7 @@ export function renderEditResults(studio,body){
  card.append(button('Cambia cartella di destinazione…',()=>studio.browseFolders('edit')));
  const link=el('a','Scarica video completo');link.href=viewURL(selected.video);link.download=selected.video.filename;card.append(link);
  card.append(button('Torna alla selezione',()=>{studio.page='prepare';studio.render();}));
+ if(selected.config?.edit?.mask?.enabled)studio.restitchPanel=new RestitchPanel(studio,body,selected);
 }
 
 class EditTimeline{
@@ -177,7 +183,7 @@ class EditTimeline{
   this.info=el('p');this.root.append(this.info);
   const controls=el('div','','dg-edit-controls');
   const loopLabel=el('label','Ripeti in loop'),loop=el('input');loop.type='checkbox';loop.checked=studio.editLoop!==false;loop.onchange=()=>{studio.editLoop=loop.checked;v.loop=loop.checked;};loopLabel.prepend(loop);controls.append(loopLabel);
-  controls.append(button('Riproduci selezione',()=>{if(!this.commitInputs())return;cancelAnimationFrame(this.seekRAF);this.seekRAF=null;v.currentTime=this.config.start;this.playingSelection=true;v.play().catch(()=>{this.playingSelection=false;});}),button('Pausa',()=>{this.playingSelection=false;v.pause();}));
+  this.playButton=button('Riproduci selezione',()=>{if(!v.paused){v.pause();return;}if(!this.commitInputs())return;cancelAnimationFrame(this.seekRAF);this.seekRAF=null;if(v.currentTime<this.config.start||v.currentTime>=this.config.end)v.currentTime=this.config.start;this.playingSelection=true;v.play().catch(()=>{this.playingSelection=false;});});controls.append(this.playButton);
   controls.append(button('−1 fotogramma',()=>this.seek(stepTime(m,v.currentTime,-1))),button('+1 fotogramma',()=>this.seek(stepTime(m,v.currentTime,1))));
   controls.append(button('Inizia la selezione da qui',()=>{const t=frameTime(m,Math.min(frameCount(m)-1,frameIndex(m,v.currentTime))),d=this.config.end-this.config.start;this.select(Math.min(t,m.duration-d),Math.min(t+d,m.duration),'end');}));
   controls.append(button('− Zoom',()=>this.zoom(2)),button('+ Zoom',()=>this.zoom(.5)),button('Tutto il video',()=>{this.span=m.duration;this.viewStart=0;this.paint(true);}));
@@ -220,10 +226,11 @@ class EditTimeline{
    this.playhead.style.left=clamp((v.currentTime-this.viewStart)/this.span*100,0,100)+'%';this.overview.value=v.currentTime;
   },{signal:this.abort.signal});
   v.addEventListener('play',()=>{
+   setAction(this.playButton,'Pausa selezione');
    const tick=()=>{if(this.closed||v.paused)return;if(this.playingSelection&&v.currentTime>=this.config.end){if(studio.editLoop!==false){v.currentTime=this.config.start;}else{this.seek(stepTime(m,this.config.end,-1));return;}}this.playRAF=requestAnimationFrame(tick);};
    cancelAnimationFrame(this.playRAF);tick();
   },{signal:this.abort.signal});
-  v.addEventListener('pause',()=>cancelAnimationFrame(this.playRAF),{signal:this.abort.signal});
+  v.addEventListener('pause',()=>{cancelAnimationFrame(this.playRAF);setAction(this.playButton,'Riproduci selezione');},{signal:this.abort.signal});
   v.addEventListener('loadedmetadata',()=>this.seek(saved?.time??this.config.start),{once:true,signal:this.abort.signal});
   this.paint(true);this.ready=true;
  }
