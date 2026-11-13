@@ -67,4 +67,7 @@
 .dg-studio .dg-upload-status{font-size:12px;margin:6px 0;overflow-wrap:anywhere;min-height:0}
 .dg-studio .dg-file-drop[data-upload-state=error]>.dg-upload-status{color:#ffbb98}
 .dg-studio .dg-file-drop[aria-busy=true]>.dg-drop-hint{color:#ffd2b8;border-style:solid}
+.dg-studio .dg-folders a{display:flex;align-items:center;gap:8px;padding:10px 14px;margin:4px 6px 4px 0;border:1px solid #505256;border-radius:7px;background:#26282b;text-decoration:none;overflow-wrap:anywhere}
+.dg-studio .dg-folders a:hover{border-color:var(--orange)}
+.dg-studio [hidden]{display:none!important}
 .dg-studio .dg-upload-toast{position:fixed;bottom:45px;left:50%;transform:translateX(-50%);z-index:20;max-width:80vw;padding:10px 18px;border:1px solid var(--orange);border-radius:7px;background:#30231d;box-shadow:0 4px 20px #0008;color:#fff}

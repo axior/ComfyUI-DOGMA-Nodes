@@ -1,6 +1,6 @@
-import {viewURL} from './dogma_h3_media.js?v=studio-1-0-49';
-import {actionButton,setAction} from './dogma_h3_actions.js?v=studio-1-0-49';
-import {RestitchHover} from './dogma_h3_restitch_hover.js?v=studio-1-0-49';
+import {viewURL} from './dogma_h3_media.js?v=studio-1-0-50';
+import {actionButton,setAction} from './dogma_h3_actions.js?v=studio-1-0-50';
+import {RestitchHover} from './dogma_h3_restitch_hover.js?v=studio-1-0-50';
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const clamp=(x,a,b)=>Math.min(b,Math.max(a,x));
 export class RestitchPanel{

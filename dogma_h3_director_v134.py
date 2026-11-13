@@ -612,17 +612,13 @@ def register_routes():
     from .dogma_h3_video_edit import register_edit_routes
     cleanup=register_edit_routes(routes,input_file)
     PromptServer.instance.app.on_cleanup.append(cleanup)
-    def local_request(request):
-        from urllib.parse import urlparse
-        if request.remote not in ('127.0.0.1','::1'):
-            raise web.HTTPForbidden(text='Disponibile solo sul computer Comfy.')
-        origin=request.headers.get('Origin')
-        if origin and urlparse(origin).netloc!=request.host:
-            raise web.HTTPForbidden(text='Origine non valida.')
+    from .dogma_h3_access import H3Access
+    access=H3Access()
+    local_request=access.local
 
     import sys
     from .dogma_h3_restitch import register_routes as register_restitch
-    PromptServer.instance.app.on_cleanup.append(register_restitch(routes,sys.modules[__name__],local_request))
+    PromptServer.instance.app.on_cleanup.append(register_restitch(routes,sys.modules[__name__],access.browser))
 
     @routes.post('/dogma/h3/v2/open-folder')
     async def open_folder(request):
@@ -639,10 +635,12 @@ def register_routes():
 
     @routes.post('/dogma/h3/v2/edit/export-copy')
     async def export_edit_copy(request):
-        local_request(request)
+        access.browser(request)
         import asyncio
         data=await request.json()
-        try:return web.json_response(await asyncio.to_thread(export_saved_edit,data))
+        try:
+            data['output_dir']=str(access.output_path(request,data.get('output_dir','').strip(),folder_paths.get_output_directory()))
+            return web.json_response(await asyncio.to_thread(export_saved_edit,data))
         except (ValueError,OSError,KeyError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
     @routes.post('/dogma/h3/v2/choose-folder')
@@ -652,26 +650,39 @@ def register_routes():
 
     @routes.get('/dogma/h3/v2/folders')
     async def folders(request):
-        local_request(request)
+        access.browser(request)
         import asyncio
         def browse():
-            directory=Path(request.query.get('path') or folder_paths.get_output_directory()).expanduser().resolve()
+            output=Path(folder_paths.get_output_directory()).resolve()
+            local=access.is_local(request)
+            directory=access.output_path(request,request.query.get('path'),output)
             if not directory.is_dir(): raise ValueError('Cartella inesistente. Inserisci un percorso valido.')
-            directories=[]
+            directories=[];files=[]
+            media={'.mp4','.mov','.webm','.mkv','.png','.jpg','.jpeg','.webp','.gif','.wav','.mp3','.flac'}
             with os.scandir(directory) as entries:
                 for entry in entries:
                     try:
-                        if entry.is_dir(): directories.append({'name':entry.name,'path':entry.path})
+                        if entry.is_dir() and (local or Path(entry.path).resolve().is_relative_to(output)):
+                            directories.append({'name':entry.name,'path':entry.path})
+                        elif request.query.get('files')=='1' and entry.is_file() and Path(entry.name).suffix.lower() in media:
+                            resolved=Path(entry.path).resolve()
+                            if resolved.is_relative_to(output):
+                                rel=resolved.relative_to(output)
+                                files.append({'name':entry.name,'size':entry.stat().st_size,
+                                              'video':{'filename':rel.name,'subfolder':rel.parent.as_posix(),'type':'output'}})
                     except OSError: continue
-                    if len(directories)>500: break
+                    if len(directories)+len(files)>500: break
             directories.sort(key=lambda x:x['name'].casefold())
+            files.sort(key=lambda x:x['name'].casefold())
             drives=[]
-            if os.name=='nt':
+            if local and os.name=='nt':
                 import ctypes
                 bits=ctypes.windll.kernel32.GetLogicalDrives()
                 drives=[{'name':chr(65+i)+':','path':chr(65+i)+':/'} for i in range(26) if bits & (1<<i)]
-            return {'path':str(directory),'parent':str(directory.parent) if directory.parent!=directory else None,
-                    'drives':drives,'directories':directories[:500],'truncated':len(directories)>500}
+            parent=str(directory.parent) if directory.parent!=directory and (local or directory.parent.is_relative_to(output)) else None
+            return {'path':str(directory),'parent':parent,'restricted':not local,
+                    'drives':drives,'directories':directories[:500],'files':files[:500],
+                    'truncated':len(directories)+len(files)>500}
         try: return web.json_response(await asyncio.to_thread(browse))
         except (ValueError,OSError) as exc: raise web.HTTPBadRequest(text=str(exc))
 
@@ -689,10 +700,11 @@ def register_routes():
     async def catalog(request):
         import asyncio,time
         nonlocal catalog_task,catalog_time
+        capabilities=access.catalog(request,folder_paths.get_output_directory())
         if catalog_task is None or (catalog_task.done() and (catalog_task.exception() is not None or time.monotonic()-catalog_time>30)):
             catalog_time=time.monotonic()
             catalog_task=asyncio.create_task(asyncio.to_thread(build_catalog))
-        return web.json_response(await asyncio.shield(catalog_task))
+        return web.json_response({**await asyncio.shield(catalog_task),'access':capabilities},headers={'Cache-Control':'no-store'})
 
     @routes.get('/dogma/h3/v2/session/{session}')
     async def session(request):

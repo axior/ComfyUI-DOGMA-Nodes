@@ -1,6 +1,6 @@
-import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-49';
-import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-49';
-import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-49';
+import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-50';
+import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-50';
+import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-50';
 const el=(tag,text='')=>{const e=document.createElement(tag);e.textContent=text;return e;};
 const button=actionButton;
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));

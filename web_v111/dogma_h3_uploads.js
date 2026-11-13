@@ -1,5 +1,5 @@
-import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-49';
-import {actionButton,setAction} from './dogma_h3_actions.js?v=studio-1-0-49';
+import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-50';
+import {actionButton,setAction} from './dogma_h3_actions.js?v=studio-1-0-50';
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const extensions={image:new Set(['png','jpg','jpeg','webp','gif','bmp','tif','tiff','avif','heic','heif']),video:new Set(['mp4','mov','m4v','mkv','webm','avi','mpeg','mpg','wmv','flv','ts','mts','m2ts','mxf','ogv','3gp'])};
 export function mediaKind(file){const mime=String(file.type||'').toLowerCase();if(mime.startsWith('image/'))return 'image';if(mime.startsWith('video/'))return 'video';const ext=String(file.name||'').split('.').pop().toLowerCase();return Object.keys(extensions).find(kind=>extensions[kind].has(ext));}

@@ -115,7 +115,7 @@ def apply_restitch(core,data):
             return current
     finally:temp.unlink(missing_ok=True)
 
-def register_routes(routes,core,local_request):
+def register_routes(routes,core,authorize_request):
     from aiohttp import web
     jobs={};slot=asyncio.Semaphore(1)
     async def launch(kind,data):
@@ -132,12 +132,12 @@ def register_routes(routes,core,local_request):
             except Exception as exc:job.update(status='error',message=str(exc))
         job['task']=asyncio.create_task(run());return web.json_response({'id':job['id']})
     @routes.post('/dogma/h3/v2/edit/restitch/preview')
-    async def preview(request):local_request(request);return await launch('preview',await request.json())
+    async def preview(request):authorize_request(request);return await launch('preview',await request.json())
     @routes.post('/dogma/h3/v2/edit/restitch/apply')
-    async def apply(request):local_request(request);return await launch('apply',await request.json())
+    async def apply(request):authorize_request(request);return await launch('apply',await request.json())
     @routes.get('/dogma/h3/v2/edit/restitch/job/{id}')
     async def status(request):
-        local_request(request);job=jobs.get(request.match_info['id'])
+        authorize_request(request);job=jobs.get(request.match_info['id'])
         if not job:raise web.HTTPNotFound(text='Lavorazione non disponibile.')
         return web.json_response({k:v for k,v in job.items() if k!='task'})
     async def cleanup(app):await asyncio.gather(*(j['task'] for j in jobs.values()),return_exceptions=True)

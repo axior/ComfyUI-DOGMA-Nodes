@@ -1,12 +1,12 @@
-import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-49';
-import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-49';
+import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-50';
+import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-50';
 import { api } from '../../scripts/api.js';
-import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-49';
-import {RestitchPanel} from './dogma_h3_restitch.js?v=studio-1-0-49';
-import {assetField,referenceDrop} from './dogma_h3_uploads.js?v=studio-1-0-49';
-import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-49';
-import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-49';
-export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-49';
+import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-50';
+import {RestitchPanel} from './dogma_h3_restitch.js?v=studio-1-0-50';
+import {assetField,referenceDrop} from './dogma_h3_uploads.js?v=studio-1-0-50';
+import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-50';
+import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-50';
+export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-50';
 
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=actionButton;
@@ -131,7 +131,14 @@ export function renderEditResults(studio,body){
  studio.editCompare=new EditComparison(studio,card,selected);
  card.append(el('small',selected.saved_path));
  if(selected.export_error)card.append(el('p','Il video completo è conservato nella sessione. La copia nella cartella scelta non è riuscita: '+selected.export_error));
- card.append(button('Apri cartella del video salvato',async()=>{try{await studio.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:studio.config.session,id:selected.id})});}catch(e){studio.fail(e.message);}}));
+ card.append(button('Apri cartella del video salvato',async()=>{try{
+  if(studio.catalog.access?.open_folder===false){
+   const base=studio.catalog.access.output_directory.replaceAll('\\','/');
+   const saved=String(selected.saved_path||'').replaceAll('\\','/'),directory=saved.slice(0,saved.lastIndexOf('/'));
+   const initialPath=directory===base||directory.startsWith(base+'/')?directory:base+'/'+(selected.video.subfolder||'');
+   await studio.browseFolders('edit',{initialPath,viewOnly:true});
+  }else await studio.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:studio.config.session,id:selected.id})});
+ }catch(e){studio.fail(e.message);}}));
  const copy=button('Copia questo finale nella cartella scelta',async()=>{if(copy.disabled)return;copy.disabled=true;try{const result=await studio.request('/dogma/h3/v2/edit/export-copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:studio.config.session,id:selected.id,output_dir:studio.config.edit.final_output_dir||studio.config.output_dir})});for(const item of studio.data.edits||[])if(item.id===result.id){item.saved_path=result.saved_path;delete item.export_error;}studio.data.status='done';studio.data.message='Video completo copiato nella cartella scelta.';studio.render();}catch(e){studio.fail(e.message);}finally{copy.disabled=false;}});copy.disabled=studio.pending;card.append(copy);
  card.append(el('small','La copia usa il video già completato, senza ricalcolarlo. Destinazione: '+(studio.config.edit.final_output_dir||studio.config.output_dir||'cartella output Comfy')));
  card.append(button('Cambia cartella di destinazione…',()=>studio.browseFolders('edit')));

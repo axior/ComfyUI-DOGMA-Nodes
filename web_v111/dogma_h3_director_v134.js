@@ -1,13 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import {actionButton,decorateActions,setAction} from './dogma_h3_actions.js?v=studio-1-0-49';
-import {assetField,referenceDrop,guardFileNavigation} from './dogma_h3_uploads.js?v=studio-1-0-49';
-import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-49';
+import {actionButton,decorateActions,setAction} from './dogma_h3_actions.js?v=studio-1-0-50';
+import {assetField,referenceDrop,guardFileNavigation} from './dogma_h3_uploads.js?v=studio-1-0-50';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-50';
 
-import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-49';
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-50';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-49',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-50',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=actionButton;
@@ -40,6 +40,12 @@ export class DirectorStudio {
   let stored;try{stored=JSON.parse(this.widget.value);}catch{stored={};}
   this.config=merge(clone(this.catalog.defaults),stored);
   this.config.session ||= crypto.randomUUID();
+  const access=this.catalog.access;
+  if(access?.local_files===false&&access.platform!=='nt'&&access.output_directory){
+   for(const [object,key]of [[this.config,'output_dir'],[this.config.edit,'final_output_dir']]){
+    if(/^(?:[a-z]:[\\/]|\\\\)/i.test(object[key]||''))object[key]=key==='final_output_dir'?'':access.output_directory;
+   }
+  }
  }
  family(task){return ['ref2v','edit'].includes(task)?'ref2v':'fl2v';}
  turbo(task,steps){
@@ -97,10 +103,12 @@ export class DirectorStudio {
   clearTimeout(this.saveTimer);this.saveTimer=setTimeout(()=>{try{app.graph?.change?.();}catch(e){console.warn('DOGMA: aggiornamento workflow',e);}},250);
  }
  async request(path,opts={}){
+  const headers=Object.fromEntries(new Headers(opts.headers||{}).entries());
+  if(path.startsWith('/dogma/h3/v2/')&&this.catalog?.access?.token)headers['X-Dogma-Access']=this.catalog.access.token;
   const controller=new AbortController(),epoch=this.epoch;this.requests.add(controller);let expired=false;
   const timeout=opts.body instanceof FormData?null:setTimeout(()=>{expired=true;controller.abort();},20000);
   try{
-   const r=await api.fetchApi(path,{...opts,signal:opts.signal?AbortSignal.any([controller.signal,opts.signal]):controller.signal});
+   const r=await api.fetchApi(path,{...opts,headers,signal:opts.signal?AbortSignal.any([controller.signal,opts.signal]):controller.signal});
    if(!r.ok)throw new Error(`Comfy: ${r.status} ${await r.text()}`);
    const result=await r.json();
    if(epoch!==this.epoch){const e=new Error('Pannello chiuso');e.name='AbortError';throw e;}
@@ -146,27 +154,32 @@ export class DirectorStudio {
   this.save();
  }
  destroy(){this.close();clearTimeout(this.saveTimer);this.abort.abort();}
- async browseFolders(scope='general'){
+ async browseFolders(scope='general',options={}){
   if(this.folderPanel||!this.dialog)return;
   const epoch=this.epoch,panel=el('section','','dg-folder-browser');this.folderPanel=panel;
-  panel.setAttribute('role','region');panel.setAttribute('aria-label','Scegli cartella output');
+  panel.setAttribute('role','region');panel.setAttribute('aria-label',options.viewOnly?'Cartella del video salvato':'Scegli cartella output');
   const main=this.dialog.querySelector('main');main.prepend(panel);
   const target=scope==='edit'?this.config.edit:this.config,key=scope==='edit'?'final_output_dir':'output_dir';
-  const input=el('input');input.type='text';input.value=target[key]||this.config.output_dir||'';input.setAttribute('aria-label','Percorso cartella');
+  const remote=this.catalog.access?.local_files===false;
+  const serverRoot=(this.catalog.access?.output_directory||'').replaceAll('\\','/').replace(/\/$/,'');
+  const preferred=(target[key]||this.config.output_dir||'').replaceAll('\\','/');
+  const initial=remote&&preferred!==serverRoot&&!preferred.startsWith(serverRoot+'/')?serverRoot:preferred;
+  const input=el('input');input.type='text';input.value=options.initialPath||initial;input.setAttribute('aria-label','Percorso cartella');
   const info=el('p'),list=el('div','','dg-folders');let busy=false,current='';
   const done=()=>{panel.remove();if(this.folderPanel===panel)this.folderPanel=null;};
-  const use=button('Usa questa cartella',async()=>{if(input.value!==current&&!await load(input.value))return;target[key]=current;this.save();done();this.render();},'dg-primary');use.disabled=true;
+  const use=button('Usa questa cartella',async()=>{if(input.value!==current&&!await load(input.value))return;target[key]=current;this.save();done();this.render();},'dg-primary');use.disabled=true;use.hidden=!!options.viewOnly;
   const go=button('Vai',()=>load(input.value));
-  panel.append(el('h2','Cartella di salvataggio'),el('p','Naviga nelle cartelle del computer che esegue Comfy.'),input,go,button('Annulla',done),use,info,list);
+  panel.append(el('h2',options.viewOnly?'Cartella del video salvato':'Cartella di salvataggio'),el('p',remote?'Cartelle del server che esegue Comfy. La navigazione parte dalla sua cartella output.':'Naviga nelle cartelle del computer che esegue Comfy.'),input,go,button(options.viewOnly?'Chiudi':'Annulla',done),use,info,list);
   const load=async path=>{
    if(busy)return;busy=true;go.disabled=true;use.disabled=true;info.textContent='Caricamento cartelle…';list.replaceChildren();
    try{
-    const r=await this.request('/dogma/h3/v2/folders?'+new URLSearchParams({path:path||''}));
+    const r=await this.request('/dogma/h3/v2/folders?'+new URLSearchParams({path:path||'',files:options.viewOnly?'1':'0'}));
     if(epoch!==this.epoch||this.folderPanel!==panel)return;
-    current=r.path;input.value=current;info.textContent=r.truncated?'Mostrate le prime 500 cartelle. Puoi inserire il percorso completo.':'Seleziona una sottocartella oppure conferma questa cartella.';
+    current=r.path;input.value=current;info.textContent=r.truncated?'Mostrati i primi 500 elementi.':options.viewOnly?'File della cartella: clicca un nome per scaricarlo.':'Seleziona una sottocartella oppure conferma questa cartella.';
     if(r.parent)list.append(button('↑ Cartella superiore',()=>load(r.parent)));
     for(const d of r.drives||[])list.append(button(d.name,()=>load(d.path)));
     for(const d of r.directories||[])list.append(button('📁 '+d.name,()=>load(d.path)));
+    for(const f of r.files||[]){const link=el('a');setAction(link,f.name+' · '+(f.size/1024/1024).toFixed(1)+' MB','download');link.href=viewURL(f.video);link.download=f.name;list.append(link);}
     use.disabled=false;return true;
    }catch(e){if(epoch===this.epoch&&this.folderPanel===panel&&e.name!=='AbortError')info.textContent=e.message;return false;}
    finally{busy=false;go.disabled=false;}
@@ -254,7 +267,7 @@ export class DirectorStudio {
    if(previewEnabled)required.push('ModelPreviewOverrideKJ');
    if(action==='finish'&&this.config.task!=='edit'&&this.config.finish.stages!=='ultimate')required.push('MinimaxH3LatentUpscaler3D');
    if(action==='finish'&&this.config.task!=='edit'&&this.config.finish.stages!=='latent')required.push('UltimateSDUpscaleNoUpscaleGuider');
-   const missing=required.filter(n=>!this.catalog.nodes.includes(n));if(missing.length)throw new Error('Installa dal Manager i nodi richiesti: '+missing.join(', '));
+   const missing=required.filter(n=>!this.catalog.nodes.includes(n));if(missing.length)throw new Error('Installa dal Manager: '+missing.map(n=>n==='MVEx_MaskToLatentSpace'?'MaskVidExperiments (nodo '+n+')':n).join(', '));
    const q=await this.request('/queue');if(q.queue_running?.length||q.queue_pending?.length)throw new Error('Comfy sta già lavorando. Attendi la fine della coda.');
    this.config.action=action;this.config.nonce++;this.save();
    if(this.config.task==='edit'&&action==='draft'){delete this.data.edit_batch;this.promotedTrial=null;this.editFinishWaiting=null;}

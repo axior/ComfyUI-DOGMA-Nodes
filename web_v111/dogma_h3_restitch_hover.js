@@ -1,4 +1,4 @@
-import {viewURL} from './dogma_h3_media.js?v=studio-1-0-49';
+import {viewURL} from './dogma_h3_media.js?v=studio-1-0-50';
 const clamp=(x,a,b)=>Math.min(b,Math.max(a,x));
 const el=(tag,cls='')=>{const e=document.createElement(tag);e.className=cls;return e;};
 export class RestitchHover{
