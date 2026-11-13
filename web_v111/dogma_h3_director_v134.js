@@ -1,11 +1,11 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-45';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-46';
 
-import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-45';
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-46';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-45',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-46',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -142,15 +142,16 @@ export class DirectorStudio {
   this.save();
  }
  destroy(){this.close();clearTimeout(this.saveTimer);this.abort.abort();}
- async browseFolders(){
+ async browseFolders(scope='general'){
   if(this.folderPanel||!this.dialog)return;
   const epoch=this.epoch,panel=el('section','','dg-folder-browser');this.folderPanel=panel;
   panel.setAttribute('role','region');panel.setAttribute('aria-label','Scegli cartella output');
   const main=this.dialog.querySelector('main');main.prepend(panel);
-  const input=el('input');input.type='text';input.value=this.config.output_dir||'';input.setAttribute('aria-label','Percorso cartella');
+  const target=scope==='edit'?this.config.edit:this.config,key=scope==='edit'?'final_output_dir':'output_dir';
+  const input=el('input');input.type='text';input.value=target[key]||this.config.output_dir||'';input.setAttribute('aria-label','Percorso cartella');
   const info=el('p'),list=el('div','','dg-folders');let busy=false,current='';
   const done=()=>{panel.remove();if(this.folderPanel===panel)this.folderPanel=null;};
-  const use=button('Usa questa cartella',()=>{this.config.output_dir=current;this.save();done();this.render();},'dg-primary');use.disabled=true;
+  const use=button('Usa questa cartella',async()=>{if(input.value!==current&&!await load(input.value))return;target[key]=current;this.save();done();this.render();},'dg-primary');use.disabled=true;
   const go=button('Vai',()=>load(input.value));
   panel.append(el('h2','Cartella di salvataggio'),el('p','Naviga nelle cartelle del computer che esegue Comfy.'),input,go,button('Annulla',done),use,info,list);
   const load=async path=>{
@@ -162,8 +163,8 @@ export class DirectorStudio {
     if(r.parent)list.append(button('↑ Cartella superiore',()=>load(r.parent)));
     for(const d of r.drives||[])list.append(button(d.name,()=>load(d.path)));
     for(const d of r.directories||[])list.append(button('📁 '+d.name,()=>load(d.path)));
-    use.disabled=false;
-   }catch(e){if(epoch===this.epoch&&this.folderPanel===panel&&e.name!=='AbortError')info.textContent=e.message;}
+    use.disabled=false;return true;
+   }catch(e){if(epoch===this.epoch&&this.folderPanel===panel&&e.name!=='AbortError')info.textContent=e.message;return false;}
    finally{busy=false;go.disabled=false;}
   };
   input.addEventListener('keydown',e=>{if(e.key==='Enter'){e.preventDefault();load(input.value);}});
@@ -177,7 +178,7 @@ export class DirectorStudio {
  }
  armSound(){if(this.config.sound){try{this.audio ||= new(window.AudioContext||window.webkitAudioContext)();this.audio.resume();}catch{}}}
  applyState(d){
-  const change=this.data.status!==d.status||this.data.edit_batch?.phase!==d.edit_batch?.phase||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length||this.data.edit_trials?.length!==d.edit_trials?.length;
+  const change=this.data.status!==d.status||this.data.edit_batch?.phase!==d.edit_batch?.phase||this.data.candidates?.length!==d.candidates?.length||this.data.finals?.length!==d.finals?.length||this.data.edits?.length!==d.edits?.length||this.data.edit_trials?.length!==d.edit_trials?.length||JSON.stringify(this.data.edits?.map(x=>[x.id,x.saved_path]))!==JSON.stringify(d.edits?.map(x=>[x.id,x.saved_path]));
   if((d.edit_trials?.length||0)>(this.data.edit_trials?.length||0)&&!d.edit_trials.some(x=>x.id===this.editTrialId)){this.editTrialId=d.edit_trials.at(-1).id;this.editComparePosition=null;}
   if((d.edits?.length||0)>(this.data.edits?.length||0)){this.editResultId=d.edits.at(-1).id;this.editComparePosition=null;}
   this.data=d;
@@ -198,7 +199,7 @@ export class DirectorStudio {
    }else if(!owned)this.pending=false;
    if(owned&&d.status==='running'&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
    if(render||JSON.stringify(d)!==JSON.stringify(this.data))this.applyState(d);else this.status();
-   if(this.editFinishWaiting&&!jobs.length&&!this.submitting){const id=this.editFinishWaiting;this.editFinishWaiting=null;this.config.edit.selected_trial=id;this.pending=false;this.queue('finish');}
+   if(this.editFinishWaiting&&!jobs.length&&!this.submitting){const intent=this.editFinishWaiting;this.editFinishWaiting=null;this.config.edit.selected_trial=intent.id;for(const [key,name]of Object.entries({mode:'final_mode',steps:'final_steps',method:'final_method',denoise:'final_denoise',output_dir:'final_output_dir'}))this.config.edit[name]=intent.options[key];this.pending=false;this.queue('finish');}
   }catch(e){if(epoch===this.epoch&&e.name!=='AbortError'){this.data.message='Stato non disponibile: '+e.message;this.status();}}
   finally{if(epoch===this.epoch)this.recovering=false;}
  }
@@ -208,7 +209,7 @@ export class DirectorStudio {
   this.dialog?.querySelectorAll('[data-queue]').forEach(b=>b.disabled=this.pending||this.submitting||this.uploads>0);
   this.dialog?.querySelectorAll('[data-edit-finish]').forEach(b=>{
    b.disabled=this.promoting||this.submitting||this.uploads>0||!!this.editFinishWaiting||this.pending&&this.data.edit_batch?.phase==='finish';
-   b.textContent=this.pending&&this.data.edit_batch?.phase!=='finish'?'Usa questo provino e salta gli altri':'Rigenera questo provino alla dimensione originale';
+   b.textContent=this.pending&&this.data.edit_batch?.phase!=='finish'?'Usa questo provino e salta gli altri':'Prepara questo provino alla dimensione originale';
   });
   const bar=this.dialog?.querySelector('.dg-progress');if(bar){const p=this.data.progress;bar.hidden=!this.pending;bar.max=p?.total||1;bar.value=p?.step||0;}
   const detail=this.dialog?.querySelector('.dg-progress-label');if(detail)detail.textContent=this.pending?(this.data.progress?`Passaggio corrente: ${this.data.progress.step} / ${this.data.progress.total}`:'Elaborazione in corso · attendo avanzamento o anteprima') : '';
@@ -243,6 +244,7 @@ export class DirectorStudio {
    const executionConfig=this.config.task==='edit'&&action==='finish'?this.data.edit_trials.find(p=>p.id===this.config.edit.selected_trial).config:this.config;
    const required=[];
    if(executionConfig.task==='edit'&&executionConfig.edit.mask?.enabled)required.push('MVEx_MaskToLatentSpace');
+   if(this.config.task==='edit'&&action==='finish'&&(this.config.edit.final_method||'preserve')==='guided')required.push('MinimaxH3LatentUpscaler3D');
    if(action==='develop'&&this.config.develop.mode==='guided')required.push('MinimaxH3LatentUpscaler3D');
    const previewEnabled=executionConfig.preview.enabled&&!(this.config.task==='edit'&&action==='draft'&&!executionConfig.edit.trial_live_preview);
    if(previewEnabled)required.push('ModelPreviewOverrideKJ');
@@ -268,12 +270,13 @@ export class DirectorStudio {
   if(!this.pending){await this.queue('finish');return;}
   this.promoting=true;this.status();
   try{
-   const result=await this.request('/dogma/h3/v2/edit/promote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,trial:id,batch:this.data.edit_batch?.id})});
+   const options={mode:this.config.edit.final_mode||'match',steps:Number(this.config.edit.final_steps??20),method:this.config.edit.final_method||'preserve',denoise:Number(this.config.edit.final_denoise??.25),output_dir:this.config.edit.final_output_dir||this.config.output_dir||''};
+   const result=await this.request('/dogma/h3/v2/edit/promote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,trial:id,batch:this.data.edit_batch?.id,options})});
    this.promotedTrial=id;
    if(result.status==='accepted'){
     this.data.edit_batch=result.batch;this.page='finish';this.data.message='Provino scelto · salto gli altri e passo alla dimensione originale';this.render();
    }else{
-    this.editFinishWaiting=id;this.data.message='Provino scelto · attendo la chiusura del gruppo e avvio la rigenerazione';
+    this.editFinishWaiting={id,options};this.data.message='Provino scelto · attendo la chiusura del gruppo e avvio la rigenerazione';
     const q=await this.request('/queue');const own=x=>x[1]===this.promptId;
     const pending=(q.queue_pending||[]).filter(own).map(x=>x[1]);
     if(pending.length)await this.request('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete:pending})});

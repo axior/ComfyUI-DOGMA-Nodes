@@ -163,8 +163,32 @@ def export_file(path,c):
     if not directory.is_absolute(): raise ValueError('La cartella output deve avere un percorso assoluto.')
     directory.mkdir(parents=True,exist_ok=True)
     dest=directory/(path.stem+'_'+uuid.uuid4().hex[:8]+path.suffix)
-    shutil.copy2(path,dest)
+    temp=dest.with_suffix(dest.suffix+'.tmp')
+    try:
+        shutil.copy2(path,temp)
+        if temp.stat().st_size!=Path(path).stat().st_size:raise OSError('Copia del video finale incompleta.')
+        temp.replace(dest)
+    finally:temp.unlink(missing_ok=True)
     return str(dest.resolve())
+
+
+def export_saved_edit(data):
+    import folder_paths
+    with _STATE_LOCK:
+        st=state(data['session'])
+        if st.get('status')=='running':raise ValueError('Attendi la fine della lavorazione prima di ricopiare un finale.')
+        item=next((x for x in st.get('edits',[]) if x.get('id')==data.get('id') and x.get('complete')),None)
+        if not item:raise ValueError('Finale completo non disponibile.')
+        f=item['video'];source=(Path(folder_paths.get_output_directory())/f.get('subfolder','')/f['filename']).resolve()
+        if not source.is_relative_to(manifest_root(data['session']).resolve()) or not source.is_file():
+            raise ValueError('File finale non disponibile. Non verrà esportato il sorgente al suo posto.')
+        destination=data.get('output_dir','').strip() or folder_paths.get_output_directory()
+        saved=export_file(source,dict(output_dir=destination))
+        item['saved_path']=saved;item.pop('export_error',None);item.setdefault('exports',[]).append(saved)
+        if st.get('message','').startswith('Video pronto e conservato nella sessione; copia'):
+            st.update(status='done',message='Video completo copiato nella cartella scelta.')
+        write_json(manifest_root(data['session'])/'session.json',st)
+        return dict(saved_path=saved,id=item['id'])
 
 
 def call(name,uid='dogma',**kwargs):
@@ -279,6 +303,9 @@ def sampler_for(s):
 
 def sample(model,cond,latent,s,seed,manual=False,progress=None):
     import torch
+    if s.get('require_edit_mask'):
+        from .dogma_h3_edit_mask import inspect_native_mask
+        inspect_native_mask(latent)
     from comfy_extras.nodes_custom_sampler import BasicScheduler,Guider_Basic,Noise_RandomNoise,SamplerCustomAdvanced
     guider=Guider_Basic(model); guider.set_conds(cond)
     if manual and s.get('sigmas','').strip():
@@ -301,7 +328,12 @@ def sample(model,cond,latent,s,seed,manual=False,progress=None):
         from comfy.nested_tensor import NestedTensor
         video,audio=tensor.unbind(); nv,na=noise.unbind()
         noise=NestedTensor([nv,torch.zeros_like(na)])
-        latent['noise_mask']=NestedTensor([torch.ones_like(video),torch.zeros_like(audio)])
+        existing_mask=latent.get('noise_mask')
+        video_mask=existing_mask.unbind()[0] if existing_mask is not None else torch.ones_like(video)
+        latent['noise_mask']=NestedTensor([video_mask,torch.zeros_like(audio)])
+    if s.get('require_edit_mask'):
+        from .dogma_h3_edit_mask import inspect_native_mask
+        inspect_native_mask(latent)
     result=guider.sample(noise,tensor,sampler_for(s),sigmas,
         denoise_mask=latent.get('noise_mask'),callback=callback,
         disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,seed=seed)
@@ -592,13 +624,21 @@ def register_routes():
         local_request(request)
         import asyncio
         data=await request.json(); st=await asyncio.to_thread(state,data['session'])
-        item=next((x for x in st.get('finals',[])+st.get('developments',[])+st.get('candidates',[]) if x.get('id')==data.get('id')),None)
+        item=next((x for x in st.get('edits',[])+st.get('finals',[])+st.get('developments',[])+st.get('candidates',[]) if x.get('id')==data.get('id')),None)
         if not item or not item.get('saved_path'): raise web.HTTPNotFound(text='Risultato non disponibile.')
         directory=Path(item['saved_path']).parent
         if not directory.is_dir(): raise web.HTTPNotFound(text='Cartella non disponibile.')
         if os.name!='nt': raise web.HTTPBadRequest(text='Apri cartella richiede Windows.')
         os.startfile(str(directory))
         return web.json_response({'ok':True})
+
+    @routes.post('/dogma/h3/v2/edit/export-copy')
+    async def export_edit_copy(request):
+        local_request(request)
+        import asyncio
+        data=await request.json()
+        try:return web.json_response(await asyncio.to_thread(export_saved_edit,data))
+        except (ValueError,OSError,KeyError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
     @routes.post('/dogma/h3/v2/choose-folder')
     async def choose_folder(request):

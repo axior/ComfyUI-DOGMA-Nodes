@@ -136,8 +136,27 @@ def prepare_masked_latent(director, latent, vae, selected, mask_path, settings, 
     return result
 
 
+def inspect_native_mask(latent):
+    """Validate the actual AV mask handed to sampling, not only the preview."""
+    import torch
+    mask=latent.get('noise_mask')
+    if mask is None or not getattr(mask,'is_nested',hasattr(mask,'unbind')):
+        raise ValueError('Maschera edit assente dai latenti: campionamento annullato.')
+    try:
+        video,audio=latent['samples'].unbind();vm,am=mask.unbind()
+    except (ValueError,TypeError,AttributeError):
+        raise ValueError('Maschera edit AV non valida.') from None
+    if vm.ndim!=video.ndim or vm.shape[0]!=video.shape[0] or vm.shape[1] not in (1,video.shape[1]) or tuple(vm.shape[2:])!=tuple(video.shape[2:]):
+        raise ValueError('La maschera non coincide con la griglia video del campionamento.')
+    if tuple(am.shape)!=tuple(audio.shape) or not torch.isfinite(am).all() or torch.count_nonzero(am):
+        raise ValueError('La maschera audio deve restare a zero durante l’edit.')
+    if not torch.isfinite(vm).all() or vm.min()<0 or vm.max()>1:
+        raise ValueError('La maschera video contiene valori non validi.')
+    if not torch.count_nonzero(vm):raise ValueError('La selezione non contiene aree bianche nella maschera: nessun edit da applicare.')
+    return dict(enabled=True,shape=list(vm.shape),coverage=round(float(vm.float().mean()),6),audio_locked=True)
+
 def write_segment(source, generated, dest, meta, plan, *, mask_path=None, settings=None,
-                  size=None, fade=0., preview=False, interrupt=lambda:None, progress=lambda a,b:None):
+                  size=None, fade=0., preview=False, precomposited=False, interrupt=lambda:None, progress=lambda a,b:None):
     """Only the selected interval is decoded; mask adjustments use source pixels."""
     size = size or (meta['width'], meta['height'])
     readers = []
@@ -161,6 +180,9 @@ def write_segment(source, generated, dest, meta, plan, *, mask_path=None, settin
                 alpha = processed_mask(mask.at(second), settings) if mask else np.ones((size[1],size[0]),np.float32)
                 next_time = times[i+1] if i+1 < len(times) else plan['end']
                 alpha = resize_alpha(alpha, size)*fade_weight(second, plan, fade, next_time-second)
+                # An approved trial already includes feather and temporal fades.
+                # Applying their alpha twice would bring the old wall back.
+                if precomposited:alpha=(alpha>0).astype(np.float32)
                 if preview:
                     if settings['view'] == 'mask':
                         rgb = np.repeat(np.rint(alpha[...,None]*255).astype(np.uint8), 3, axis=2)

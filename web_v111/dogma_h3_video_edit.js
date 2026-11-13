@@ -1,9 +1,9 @@
-import { MaskEditor } from './dogma_h3_edit_mask.js?v=studio-1-0-45';
-import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-45';
+import { MaskEditor } from './dogma_h3_edit_mask.js?v=studio-1-0-46';
+import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-46';
 import { api } from '../../scripts/api.js';
-import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-45';
-import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-45';
-export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-45';
+import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-46';
+import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-46';
+export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-46';
 
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn)=>{const e=el('button',text);e.type='button';e.onclick=fn;return e;};
@@ -48,14 +48,14 @@ export function renderEditor(studio,body){
  const anchors=studio.field(prompt,'Mantieni i fotogrammi ai due estremi come guida',e,'anchor_edges',{type:'checkbox',hint:e.mask?.enabled?'Con maschera attiva gli estremi non vengono forzati: anche lì può essere richiesta una modifica.':'Aiuta il raccordo. Disattiva se vuoi modificare anche il primo e l’ultimo fotogramma.'});anchors.disabled=!!e.mask?.enabled;
  studio.field(prompt,'Raccordo con l’originale · secondi per lato',e,'fade',{type:'number',min:0,max:.5,step:.025,hint:'Sfumatura dentro la selezione. 0 = taglio netto. Una sfumatura troppo lunga può creare doppie immagini.'});
  studio.loras(prompt,c.common_loras,'LoRA per questo edit');
- const advanced=el('details','','dg-card');advanced.append(el('summary','Qualità finale · modello e campionamento'));body.append(advanced);
+ const advanced=el('details','','dg-card');advanced.append(el('summary','Modelli e campionamento personalizzato'));body.append(advanced);
  studio.field(advanced,'Checkpoint Ref2VA',c.models,'ref2v',{options:['',...studio.catalog.models]});
  for(const [key,label,options]of[['clip','Text encoder',studio.catalog.clip],['vae','Video VAE',studio.catalog.vae],['audio','Audio VAE',studio.catalog.vae]])studio.field(advanced,label,c.models,key,{options});
  studio.sampleFields(advanced,e);
  studio.field(advanced,'Anteprima durante il calcolo',c.preview,'enabled',{type:'checkbox'});
- advanced.append(el('p','Provini alla dimensione scelta, poi nuova generazione alla dimensione originale. Eventuali bordi per allineare H3 a 32 px vengono rimossi. Il sorgente può richiedere molta VRAM alla sua risoluzione originale.'));
+ advanced.append(el('p','Provini alla dimensione scelta, poi sviluppo del provino approvato alla dimensione originale. Eventuali bordi per allineare H3 a 32 px vengono rimossi. Il sorgente può richiedere molta VRAM alla sua risoluzione originale.'));
  const trials=studio.section(body,'Provini edit · velocità e varianti');
- studio.field(trials,'Velocità dei provini',e,'trial_mode',{options:[['fast','Rapido · Turbo Ref2Video · 4 passaggi'],['same','Stessa qualità del finale']],hint:'Il rapido usa la LoRA Turbo Ref2Video installata. Il finale conserva il campionamento di qualità della sezione precedente.'});
+ studio.field(trials,'Velocità dei provini',e,'trial_mode',{options:[['fast','Rapido · Turbo Ref2Video · 4 passaggi'],['same','Personalizzato · parametri avanzati']],hint:'Il rapido usa la LoRA Turbo Ref2Video installata. Il campionamento alla dimensione originale si sceglie nella scheda del provino.'});
  studio.field(trials,'Dimensione dei provini · lato lungo',e,'trial_edge',{options:[[256,'256 px · più leggero'],[384,'384 px'],[512,'512 px']],change:()=>studio.render()});
  studio.field(trials,'Anteprima durante il calcolo dei provini',e,'trial_live_preview',{type:'checkbox',hint:'Disattivata per velocizzare i provini. Il video completo del provino compare appena pronto.'});
  studio.field(trials,'Confronta',c,'exploration',{options:[['seeds','Seed diversi · stesso prompt'],['prompts','Prompt diversi · stesso seed']],change:()=>studio.render()});
@@ -89,23 +89,48 @@ export function renderEditTrials(studio,body){
  const prompt=el('details');prompt.append(el('summary','Prompt del provino'),el('pre',selected.prompt));card.append(prompt);
  studio.editCompare=new EditComparison(studio,card,selected);
  card.append(el('p',`Scelto per il finale: ${selected.label} · seed ${selected.seed}`));
- const finish=button('Rigenera questo provino alla dimensione originale',()=>studio.useEditTrial(selected.id));finish.className='dg-primary';finish.dataset.editFinish=selected.id;card.append(finish);
- card.append(el('small','Puoi scegliere appena un provino è pronto: il calcolo del provino in corso viene fermato al prossimo punto di controllo e gli altri vengono saltati. Il finale usa sorgente, prompt, seed e maschera salvati, con il campionamento di qualità originale.'));
+ studio.config.edit.final_mode ||= 'match';studio.config.edit.final_steps ??= 20;
+ studio.config.edit.final_method ||= 'preserve';studio.config.edit.final_denoise ??= .25;
+ studio.field(card,'Come preparare il finale',studio.config.edit,'final_method',{options:[['preserve','Mantieni edit · ingrandisci senza rigenerare'],['guided','Sviluppa con H3 · può cambiare l’edit'],['regenerate','Nuova generazione dal sorgente']],change:()=>studio.render(),hint:'Mantieni edit è predefinito: ingrandisce il risultato approvato senza sintetizzare nuovo dettaglio. Fuori dalla maschera usa il sorgente originale. Sviluppa con H3 parte dal provino, ma può aggiungere artefatti o cambiarne l’aspetto.'});
+ const actual=selected.sampling||selected.config.edit;
+ if(studio.config.edit.final_method!=='preserve'){
+ studio.field(card,'Campionamento alla dimensione originale',studio.config.edit,'final_mode',{options:[['match',`Come il provino scelto · ${actual.turbo?'Turbo':'standard'} · ${actual.steps} passaggi`],['turbo','Turbo Ref2Video · 4 passaggi'],['standard','Standard · senza Turbo']],change:()=>studio.render(),hint:'Questa scelta vale anche per un provino già generato. Prompt, seed, sorgente, reference e maschera restano quelli del provino scelto.'});
+ if(studio.config.edit.final_mode==='standard')studio.field(card,'Passaggi del finale standard',studio.config.edit,'final_steps',{type:'number',min:1,max:100,step:1});
+ if(studio.config.edit.final_method==='guided'){
+  studio.field(card,'Intensità del raffinamento',studio.config.edit,'final_denoise',{type:'number',min:.01,max:1,step:.05,hint:'0,25 predefinito. Valori più alti danno più libertà al modello e possono cambiare il risultato.'});
+  card.append(el('small',selected.latent?'Lo sviluppo trasferisce i latenti salvati del provino e mantiene la maschera.':'Questo provino precedente non ha latenti salvati: lo sviluppo codifica il suo video approvato. Il contenuto può cambiare durante il raffinamento.'));
+ }
+ }
+ studio.field(card,'Cartella del finale · vuoto = cartella output Comfy',studio.config.edit,'final_output_dir',{hint:'Il finale viene copiato qui anche quando scegli un provino mentre gli altri sono ancora in calcolo.'});
+ card.append(button('Scegli cartella del finale…',()=>studio.browseFolders('edit')));
+ const finish=button('Prepara questo provino alla dimensione originale',()=>studio.useEditTrial(selected.id));finish.className='dg-primary';finish.dataset.editFinish=selected.id;card.append(finish);
+ card.append(el('small','Puoi scegliere appena un provino è pronto: il calcolo del provino in corso viene fermato al prossimo punto di controllo e gli altri vengono saltati. Prompt, seed e maschera restano quelli salvati nel provino.'));
 }
 
 export function renderEditResults(studio,body){
  if(studio.pending||studio.previewData)studio.live(body);
+ if(studio.pending)body.append(el('p','Nuova lavorazione ancora in corso. I video salvati qui sotto appartengono alle lavorazioni precedenti.'));
  const items=studio.data.edits||[];
  if(!items.length){body.append(el('p','Qui apparirà il video completo con il tratto già sostituito.'));return;}
  const selected=items.find(x=>x.id===studio.editResultId)||items.at(-1);studio.editResultId=selected.id;
- const controls=studio.section(body,'Risultati disponibili');
+ const controls=studio.section(body,studio.pending?'Risultati precedenti salvati':'Risultati disponibili');
  for(const [i,item]of items.entries()){
-  const choose=button(`Versione ${i+1} · ${clock(item.selection.start)} → ${clock(item.selection.end)}`,()=>{studio.editResultId=item.id;studio.render();});
+  const origin=items[i].origin_trial_label||studio.data.edit_trials?.find(x=>x.id===item.trial)?.label||'provino precedente';
+  const choose=button(`Versione ${i+1} · da ${origin} · seed ${item.seed}`,()=>{studio.editResultId=item.id;studio.render();});
   if(item.id===selected.id)choose.className='is-active';controls.append(choose);
  }
- const card=studio.section(body,'Originale / risultato · confronto sincronizzato');
+ const card=studio.section(body,'Video completo salvato · confronto sincronizzato');
+ const origin=selected.origin_trial_label||studio.data.edit_trials?.find(x=>x.id===selected.trial)?.label||'provino precedente';
+ card.append(el('p',`Risultato da ${origin} · seed ${selected.seed}${selected.sampling?' · '+(selected.sampling.turbo?'Turbo':'standard')+' · '+selected.sampling.steps+' passaggi':''}`));
+ if(selected.mask_report?.enabled)card.append(el('small','Maschera video verificata nel campionamento e applicata alla ricomposizione.'));
+ if(selected.development)card.append(el('p',selected.development.method==='preserve'?'Edit del provino mantenuto · ingrandimento senza nuova generazione':selected.development.method==='guided'?'Sviluppato dal provino approvato':'Nuova generazione dal sorgente'));
  studio.editCompare=new EditComparison(studio,card,selected);
  card.append(el('small',selected.saved_path));
+ if(selected.export_error)card.append(el('p','Il video completo è conservato nella sessione. La copia nella cartella scelta non è riuscita: '+selected.export_error));
+ card.append(button('Apri cartella del video salvato',async()=>{try{await studio.request('/dogma/h3/v2/open-folder',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:studio.config.session,id:selected.id})});}catch(e){studio.fail(e.message);}}));
+ const copy=button('Copia questo finale nella cartella scelta',async()=>{if(copy.disabled)return;copy.disabled=true;try{const result=await studio.request('/dogma/h3/v2/edit/export-copy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:studio.config.session,id:selected.id,output_dir:studio.config.edit.final_output_dir||studio.config.output_dir})});for(const item of studio.data.edits||[])if(item.id===result.id){item.saved_path=result.saved_path;delete item.export_error;}studio.data.status='done';studio.data.message='Video completo copiato nella cartella scelta.';studio.render();}catch(e){studio.fail(e.message);}finally{copy.disabled=false;}});copy.disabled=studio.pending;card.append(copy);
+ card.append(el('small','La copia usa il video già completato, senza ricalcolarlo. Destinazione: '+(studio.config.edit.final_output_dir||studio.config.output_dir||'cartella output Comfy')));
+ card.append(button('Cambia cartella di destinazione…',()=>studio.browseFolders('edit')));
  const link=el('a','Scarica video completo');link.href=viewURL(selected.video);link.download=selected.video.filename;card.append(link);
  card.append(button('Torna alla selezione',()=>{studio.page='prepare';studio.render();}));
 }
