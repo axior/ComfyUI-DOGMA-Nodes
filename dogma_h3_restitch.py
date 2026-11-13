@@ -26,15 +26,16 @@ def inputs(core,session,item_id):
     if not master.is_relative_to(root) or not master.is_file():raise ValueError('Master della sessione non disponibile.')
     return st,item,root,core.input_file(c['edit']['source']),core.input_file(settings['source']),raw,master,sha
 
-def preview_atlas(core,session,item_id):
+def preview_atlas(core,session,item_id,edge=320):
     from .dogma_h3_video_edit import cached_probe,plan_interval
     import folder_paths
+    if edge not in (320,960):raise ValueError('Risoluzione anteprima non disponibile.')
     st,item,root,source,mask,raw,master,sha=inputs(core,session,item_id)
     meta=cached_probe(source);validate_alignment(meta,cached_probe(mask));e=item['config']['edit'];plan=plan_interval(meta,e['start'],e['end'])
     marks=[(str(p),p.stat().st_size,p.stat().st_mtime_ns) for p in (source,mask,raw)]
-    key=hashlib.sha256(json.dumps([marks,plan,'atlas-v2-320'],sort_keys=True).encode()).hexdigest()
+    key=hashlib.sha256(json.dumps([marks,plan,'atlas-v2-'+str(edge)],sort_keys=True).encode()).hexdigest()
     folder=Path(folder_paths.get_temp_directory())/'DOGMA_RESTITCH';folder.mkdir(parents=True,exist_ok=True)
-    path=folder/(key+'.mp4');ratio=min(1.,320/max(meta['width'],meta['height']))
+    path=folder/(key+'.mp4');ratio=min(1.,edge/max(meta['width'],meta['height']))
     w,h=(max(2,round(meta[k]*ratio/2)*2) for k in ('width','height'))
     field_range=256.;started=time.monotonic()
     if not path.exists():
@@ -126,7 +127,7 @@ def register_routes(routes,core,local_request):
         async def run():
             try:
                 async with slot:
-                    result=await asyncio.to_thread(preview_atlas,core,data['session'],data['id']) if kind=='preview' else await asyncio.to_thread(apply_restitch,core,data)
+                    result=await asyncio.to_thread(preview_atlas,core,data['session'],data['id'],960 if data.get('detail') is True else 320) if kind=='preview' else await asyncio.to_thread(apply_restitch,core,data)
                     job.update(status='done',result=result)
             except Exception as exc:job.update(status='error',message=str(exc))
         job['task']=asyncio.create_task(run());return web.json_response({'id':job['id']})

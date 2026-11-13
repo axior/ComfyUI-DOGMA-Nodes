@@ -1,5 +1,6 @@
-import {viewURL} from './dogma_h3_media.js?v=studio-1-0-48';
-import {actionButton,setAction} from './dogma_h3_actions.js?v=studio-1-0-48';
+import {viewURL} from './dogma_h3_media.js?v=studio-1-0-49';
+import {actionButton,setAction} from './dogma_h3_actions.js?v=studio-1-0-49';
+import {RestitchHover} from './dogma_h3_restitch_hover.js?v=studio-1-0-49';
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const clamp=(x,a,b)=>Math.min(b,Math.max(a,x));
 export class RestitchPanel{
@@ -45,7 +46,7 @@ export class RestitchPanel{
    const card=actionButton('',()=>this.choose(p));card.className='dg-restitch-choice';card.setAttribute('aria-label','Seleziona '+p.label);card.setAttribute('aria-pressed',String(p===this.selected));
    const title=el('strong',p.label),canvas=el('canvas'),settings=el('small');canvas.width=info.width;canvas.height=info.height;canvas.setAttribute('aria-label','Anteprima '+p.label);this.canvases.push(canvas);this.cards.push({card,title,settings,p});card.replaceChildren(title,canvas,settings);grid.append(card);
   }
-  this.body.append(grid);
+  this.body.append(grid);this.hover=new RestitchHover(this,Renderer);this.cards.forEach((c,n)=>this.hover.bind(c.card,c.p,this.canvases[n]));
   const manual=el('div','','dg-grid');
   for(const [key,label,min,max]of[['grow','Espansione / contrazione · px',-256,256],['feather','Feather interno · px',0,256]]){
    const wrap=el('label','','dg-field'),input=el('input');wrap.append(el('span',label));input.type='number';input.min=min;input.max=max;input.step=1;input.value=this.custom[key];
@@ -53,14 +54,14 @@ export class RestitchPanel{
   }
   this.body.append(el('h3','Impostazioni personali'),manual);
   this.applyButton=actionButton('Applica al finale',()=>this.apply(),'dg-primary');this.body.append(this.applyButton);
-  this.body.append(el('small',`Anteprime ${info.width} × ${info.height} px · il salvataggio usa i pixel e i tempi del sorgente. Una sola anteprima temporanea condivisa; nessun file per ogni preset. La sfumatura in anteprima è indicativa alla risoluzione ridotta.`));
+  this.body.append(el('small',`Passa il mouse su un riquadro per ingrandirlo. Griglia ${info.width} × ${info.height} px; il dettaglio a 960 px viene preparato al primo passaggio e condiviso tra i preset. Il salvataggio usa i pixel e i tempi del sorgente; nessun file finale per ogni prova.`));
   this.body.append(this.notice);this.notice.textContent='';this.refresh();
   this.video=el('video');this.video.muted=true;this.video.loop=true;this.video.playsInline=true;this.video.preload='auto';this.video.className='dg-restitch-source';this.video.setAttribute('aria-hidden','true');this.body.append(this.video);
   this.video.addEventListener('loadeddata',()=>{if(this.closed||!this.root.open)return;try{this.renderer=new Renderer(this.info,this.canvases);this.play();}catch(e){this.notice.textContent=e.message;}},{signal:this.abort.signal});
   this.video.addEventListener('error',()=>{this.notice.textContent='Anteprima condivisa non leggibile. Chiudi e riapri la sezione per riprovare.';},{signal:this.abort.signal});
   this.video.addEventListener('seeked',()=>this.draw(),{signal:this.abort.signal});
   this.video.addEventListener('play',()=>{setAction(this.playButton,'Pausa anteprime');this.schedule();},{signal:this.abort.signal});
-  this.video.addEventListener('pause',()=>{this.cancelFrame();setAction(this.playButton,'Riproduci anteprime');},{signal:this.abort.signal});
+  this.video.addEventListener('pause',()=>{this.cancelFrame();this.hover?.pause();setAction(this.playButton,'Riproduci anteprime');},{signal:this.abort.signal});
   this.video.src=viewURL(info.file);this.video.load();
  }
  choose(p){this.selected=p;this.studio.restitchDrafts[this.item.id]={grow:this.custom.grow,feather:this.custom.feather,selected:p.id};this.refresh();if(this.video?.paused)this.draw();}
@@ -71,7 +72,7 @@ export class RestitchPanel{
  play(){if(!this.renderer)return;this.studio.editCompare?.pause();this.video.play().catch(()=>{setAction(this.playButton,'Riproduci anteprime');this.notice.textContent='Premi Riproduci anteprime per avviare tutti i riquadri.';});}
  schedule(){this.cancelFrame();if(this.closed||!this.video||this.video.paused)return;const next=()=>{if(this.closed||this.video?.paused)return;this.draw();this.schedule();};if(this.video.requestVideoFrameCallback)this.frame=this.video.requestVideoFrameCallback(next);else this.raf=requestAnimationFrame(next);}
  cancelFrame(){if(this.frame!=null)this.video?.cancelVideoFrameCallback?.(this.frame);cancelAnimationFrame(this.raf);this.frame=null;}
- draw(){if(!this.renderer||!this.video||this.video.readyState<2)return;this.renderer.draw(this.video,this.presets);if(!this.root.dataset.readyMs)this.root.dataset.readyMs=Math.round(performance.now()-this.openedAt);this.scrub.value=this.video.currentTime;this.position.textContent=this.video.currentTime.toFixed(2)+' s';for(const c of this.canvases)c.dataset.time=this.video.currentTime.toFixed(6);}
+ draw(){if(!this.renderer||!this.video||this.video.readyState<2)return;this.renderer.draw(this.video,this.presets);if(!this.root.dataset.readyMs)this.root.dataset.readyMs=Math.round(performance.now()-this.openedAt);this.scrub.value=this.video.currentTime;this.position.textContent=this.video.currentTime.toFixed(2)+' s';for(const c of this.canvases)c.dataset.time=this.video.currentTime.toFixed(6);this.hover?.draw();}
  async apply(){
   if(this.applyButton.disabled)return;this.applying=true;this.refresh();this.notice.textContent='Applicazione alla dimensione originale… Nessuna nuova generazione.';
   try{
@@ -79,11 +80,11 @@ export class RestitchPanel{
    if(this.closed)return;Object.assign(this.item,result);this.studio.restitchDrafts[this.item.id]={grow:this.selected.grow,feather:this.selected.feather,selected:'current'};this.studio.data.message=result.export_error||'Restitch applicato al finale.';this.applying=false;this.studio.render();
   }catch(e){if(this.closed||e.name==='AbortError')return;this.applying=false;this.notice.textContent=e.message;this.refresh();}
  }
- release(){this.applying=false;this.loadEpoch=(this.loadEpoch||0)+1;this.cancelFrame();this.video?.pause();if(this.video){this.video.removeAttribute('src');this.video.load();}this.video=null;this.renderer?.destroy();this.renderer=null;clearTimeout(this.pollTimer);this.pollResolve?.();}
+ release(){this.applying=false;this.loadEpoch=(this.loadEpoch||0)+1;this.hover?.destroy();this.hover=null;this.cancelFrame();this.video?.pause();if(this.video){this.video.removeAttribute('src');this.video.load();}this.video=null;this.renderer?.destroy();this.renderer=null;clearTimeout(this.pollTimer);this.pollResolve?.();}
  destroy(){if(this.closed)return;this.closed=true;this.release();this.abort.abort();}
 }
 
-class Renderer{
+export class Renderer{
  constructor(info,canvases){
   this.info=info;this.canvases=canvases;this.contexts=canvases.map(c=>c.getContext('2d'));this.output=document.createElement('canvas');this.output.width=info.width*canvases.length;this.output.height=info.height;
   const gl=this.gl=this.output.getContext('webgl',{alpha:false,antialias:false,preserveDrawingBuffer:true});

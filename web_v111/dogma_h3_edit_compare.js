@@ -1,6 +1,6 @@
-import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-48';
-import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-48';
-import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-48';
+import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-49';
+import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-49';
+import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-49';
 const el=(tag,text='')=>{const e=document.createElement(tag);e.textContent=text;return e;};
 const button=actionButton;
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
@@ -46,7 +46,7 @@ export class EditComparison{
   this.playButton=button('Riproduci edit',()=>this.toggle(true));this.fullButton=button('Riproduci tutto',()=>this.toggle(false));
   this.fullButton.hidden=this.left.offset>0||this.right.offset>0||this.left.end!==Infinity&&this.left.end<item.duration||this.right.end<item.duration;
   const loopLabel=el('label','Ripeti in loop'),loop=el('input');loop.type='checkbox';loop.checked=studio.editLoop!==false;loop.onchange=()=>{studio.editLoop=loop.checked;};loopLabel.prepend(loop);
-  actions.append(this.playButton,this.fullButton,button('Vai all’edit',()=>this.seek(item.selection.start)),button('−1 fotogramma',()=>this.step(-1)),button('+1 fotogramma',()=>this.step(1)),loopLabel);
+  actions.append(this.playButton,this.fullButton,button('Vai all’edit',()=>this.seek(item.selection.start)),button('Fotogramma precedente',()=>this.step(-1)),button('Fotogramma successivo',()=>this.step(1)),loopLabel);
   this.slider=el('input');this.slider.type='range';this.slider.step='any';this.slider.setAttribute('aria-label','Posizione comune del confronto');this.slider.oninput=()=>this.seek(Number(this.slider.value));
   this.position=el('p');this.notice=el('small');this.notice.setAttribute('role','status');
   const sound=el('label','Audio del confronto');sound.className='dg-field';const audio=el('select');

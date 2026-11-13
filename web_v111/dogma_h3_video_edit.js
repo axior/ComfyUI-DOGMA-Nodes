@@ -1,11 +1,12 @@
-import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-48';
-import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-48';
+import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-49';
+import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-49';
 import { api } from '../../scripts/api.js';
-import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-48';
-import {RestitchPanel} from './dogma_h3_restitch.js?v=studio-1-0-48';
-import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-48';
-import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-48';
-export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-48';
+import {actionButton,setAction,loraLabel} from './dogma_h3_actions.js?v=studio-1-0-49';
+import {RestitchPanel} from './dogma_h3_restitch.js?v=studio-1-0-49';
+import {assetField,referenceDrop} from './dogma_h3_uploads.js?v=studio-1-0-49';
+import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-49';
+import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-49';
+export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-49';
 
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=actionButton;
@@ -15,34 +16,20 @@ export const clock=t=>{const m=Math.floor(t/60),s=t-m*60;return `${String(m).pad
 
 export function renderEditor(studio,body){
  const c=studio.config,e=c.edit;
- const section=studio.section(body,'Video originale · scegli il tratto da modificare');
- const upload=el('input');upload.type='file';upload.accept='video/*';upload.hidden=true;
- const load=button(e.source?'Cambia video':'Carica video',()=>upload.click());
- const uploadStatus=el('small');
- upload.onchange=async()=>{
-  const file=upload.files?.[0];if(!file)return;
-  studio.uploads=(studio.uploads||0)+1;studio.status();load.disabled=true;uploadStatus.textContent='Caricamento del video sul server…';
-  try{
-   const data=new FormData();data.append('image',file);data.append('type','input');data.append('subfolder','DOGMA_DIRECTOR');
-   const r=await studio.request('/upload/image',{method:'POST',body:data});
-   e.source=(r.subfolder?r.subfolder+'/':'')+r.name;e.start=0;e.end=107/24;
-   studio.editMeta=null;studio.save();studio.render();
-  }catch(err){if(err.name!=='AbortError')studio.fail(err.message);}
-  finally{studio.uploads--;studio.status();load.disabled=false;uploadStatus.textContent='';}
- };
- section.append(upload,load,uploadStatus);
+ const section=assetField(studio,body,'Video originale · scegli il tratto da modificare',e,'source','video',{
+  preview:false,allowRemove:false,loadLabel:'Carica video',changeLabel:'Cambia video',onUploaded:()=>{e.start=0;e.end=107/24;studio.editMeta=null;}});
  if(e.source){
-  section.append(el('small',e.source));
   const timeline=el('div','','dg-edit-panel');section.append(timeline);
   studio.editTimeline=new EditTimeline(studio,timeline,e);
  }
  studio.maskEditor=new MaskEditor(studio,body);
  const refs=studio.section(body,'Reference per la modifica');
  refs.append(el('p','Il tratto selezionato è <Video 1>. Le immagini aggiuntive sono <Picture 1>, <Picture 2>…; gli altri video sono <Video 2> e <Video 3>.'));
+ const drop=referenceDrop(studio,refs,{image:9,video:2});
  const grid=el('div','','dg-grid');refs.append(grid);let pictures=0,videos=1;
  c.refs.forEach((r,i)=>studio.asset(grid,r.kind==='image'?`Picture ${++pictures}`:`Video ${++videos}`,r,'name',r.kind,()=>c.refs.splice(i,1)));
- if(pictures<9)refs.append(button('+ Immagine reference',()=>{c.refs.push({kind:'image',name:''});studio.save();studio.render();}));
- if(videos<3)refs.append(button('+ Video reference',()=>{c.refs.push({kind:'video',name:''});studio.save();studio.render();}));
+ if(pictures<9)refs.append(button('Aggiungi immagine',()=>drop.choose('image')));
+ if(videos<3)refs.append(button('Aggiungi video',()=>drop.choose('video')));
  refs.append(el('small','Massimo 9 immagini e 3 video incluso il sorgente. I video aggiuntivi devono durare 2–15 s; la somma, sorgente selezionato incluso, non può superare 15 s.'));
  const prompt=studio.section(body,'Cosa vuoi cambiare?');
  studio.field(prompt,'Istruzioni di edit',c,'prompt',{multi:true,rows:7,hint:'Descrivi la modifica e il ruolo delle reference. Il sorgente viene inserito automaticamente come Video 1.'});
@@ -67,7 +54,7 @@ export function renderEditor(studio,body){
    variant.loras??=[];studio.loras(row,variant.loras,'LoRA della variante');
    if(c.variants.length>1)row.append(button('Rimuovi variante',()=>{c.variants.splice(i,1);studio.save();studio.render();}));
   });
-  if(c.variants.length<10)trials.append(button('+ Variante',()=>{c.variants.push({text:'',loras:[]});studio.save();studio.render();}));
+  if(c.variants.length<10)trials.append(button('Aggiungi variante',()=>{c.variants.push({text:'',loras:[]});studio.save();studio.render();}));
  }
  trials.append(el('p',`I provini elaborano solo la selezione fino a ${e.trial_edge} px. In modalità rapida il primo caricamento e la prima preparazione restano necessari; i seed successivi riusano la preparazione comune. Scegli un provino per rigenerarlo alla dimensione originale con lo stesso prompt, seed e maschera.`));
  const go=button(`Genera provini edit a ${e.trial_edge} px`,()=>studio.queue('draft'));go.className='dg-primary';go.dataset.queue='';body.append(go);
@@ -184,9 +171,9 @@ class EditTimeline{
   const controls=el('div','','dg-edit-controls');
   const loopLabel=el('label','Ripeti in loop'),loop=el('input');loop.type='checkbox';loop.checked=studio.editLoop!==false;loop.onchange=()=>{studio.editLoop=loop.checked;v.loop=loop.checked;};loopLabel.prepend(loop);controls.append(loopLabel);
   this.playButton=button('Riproduci selezione',()=>{if(!v.paused){v.pause();return;}if(!this.commitInputs())return;cancelAnimationFrame(this.seekRAF);this.seekRAF=null;if(v.currentTime<this.config.start||v.currentTime>=this.config.end)v.currentTime=this.config.start;this.playingSelection=true;v.play().catch(()=>{this.playingSelection=false;});});controls.append(this.playButton);
-  controls.append(button('−1 fotogramma',()=>this.seek(stepTime(m,v.currentTime,-1))),button('+1 fotogramma',()=>this.seek(stepTime(m,v.currentTime,1))));
+  controls.append(button('Fotogramma precedente',()=>this.seek(stepTime(m,v.currentTime,-1))),button('Fotogramma successivo',()=>this.seek(stepTime(m,v.currentTime,1))));
   controls.append(button('Inizia la selezione da qui',()=>{const t=frameTime(m,Math.min(frameCount(m)-1,frameIndex(m,v.currentTime))),d=this.config.end-this.config.start;this.select(Math.min(t,m.duration-d),Math.min(t+d,m.duration),'end');}));
-  controls.append(button('− Zoom',()=>this.zoom(2)),button('+ Zoom',()=>this.zoom(.5)),button('Tutto il video',()=>{this.span=m.duration;this.viewStart=0;this.paint(true);}));
+  controls.append(button('Riduci',()=>this.zoom(2)),button('Ingrandisci',()=>this.zoom(.5)),button('Tutto il video',()=>{this.span=m.duration;this.viewStart=0;this.paint(true);}));
   this.root.append(controls);
   const overviewLabel=el('label','Scorri nel video completo','dg-field');
   const overview=this.overview=el('input');overview.type='range';overview.min=0;overview.max=m.duration;overview.step=1/m.fps;

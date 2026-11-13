@@ -1,12 +1,13 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import {actionButton,decorateActions,setAction} from './dogma_h3_actions.js?v=studio-1-0-48';
-import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-48';
+import {actionButton,decorateActions,setAction} from './dogma_h3_actions.js?v=studio-1-0-49';
+import {assetField,referenceDrop,guardFileNavigation} from './dogma_h3_uploads.js?v=studio-1-0-49';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-49';
 
-import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-48';
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-49';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-48',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-49',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=actionButton;
@@ -118,6 +119,7 @@ export class DirectorStudio {
   if(this.dialog?.open)return;
   active=this;const epoch=++this.epoch;this.loading=true;
   const dialog=this.dialog=el('dialog','','dg-studio');dialog.setAttribute('aria-label','DOGMA H3 Director');
+  guardFileNavigation(dialog);
   dialog.addEventListener('cancel',e=>{e.preventDefault();this.close();});
   // Keep Comfy shortcuts away from text fields; never synthesize keyboard events.
   for(const name of ['keydown','keyup'])dialog.addEventListener(name,e=>e.stopPropagation());
@@ -312,17 +314,11 @@ export class DirectorStudio {
   const draw=()=>{
    [...d.children].slice(1).forEach(e=>e.remove());d.firstChild.textContent=`${title} · ${stack.length}`;
    stack.forEach((l,i)=>{const row=el('div','','dg-lora-row');this.field(row,'LoRA',l,'name',{options:['',...this.catalog.loras]});this.field(row,'Potenza',l,'strength',{type:'number',step:.01,min:-10,max:10});row.append(button('Rimuovi',()=>{stack.splice(i,1);this.save();draw();}));d.append(row);});
-   d.append(button('+ Aggiungi LoRA',()=>{stack.push({name:'',strength:1});this.save();draw();}));decorateActions(d);
+   d.append(button('Aggiungi LoRA',()=>{stack.push({name:'',strength:1});this.save();draw();}));decorateActions(d);
   };draw();
  }
  asset(parent,title,obj,key,kind='image',remove,onUpload){
-  const p=this.section(parent,title);const name=obj[key];
-  if(name)p.append(mediaPreview(inputFile(name),{kind,className:'dg-asset'}).root,el('small',name));
-  const upload=el('input');upload.type='file';upload.accept=kind==='video'?'video/*':'image/*';upload.hidden=true;
-  upload.onchange=async()=>{const file=upload.files?.[0];if(!file)return;this.uploads=(this.uploads||0)+1;this.status();try{const data=new FormData();data.append('image',file);data.append('type','input');data.append('subfolder','DOGMA_DIRECTOR');const res=await this.request('/upload/image',{method:'POST',body:data});obj[key]=(res.subfolder?res.subfolder+'/':'')+res.name;onUpload?.();this.save();this.render();}catch(e){if(e.name!=='AbortError')this.fail(e.message);}finally{this.uploads--;this.status();}};
-  p.append(upload,button(name?'Cambia file':'Carica file',()=>upload.click()));
-  if(name||remove)p.append(button('Rimuovi',()=>{if(remove)remove();else obj[key]='';this.save();this.render();}));
-  return p;
+  return assetField(this,parent,title,obj,key,kind,{remove,onUploaded:onUpload});
  }
  render(){
   if(!this.dialog||this.loading)return;
@@ -355,10 +351,11 @@ export class DirectorStudio {
   const assets=el('div','','dg-grid');body.append(assets);
   if(c.task==='i2v'){this.asset(assets,'Primo fotogramma · facoltativo',c,'first');this.asset(assets,'Ultimo fotogramma · facoltativo',c,'last');}
   if(c.task==='ref2v'){
-   let image=0,video=0;c.refs.forEach((r,i)=>this.asset(assets,r.kind==='image'?`Picture ${++image}`:`Video ${++video}`,r,'name',r.kind,()=>c.refs.splice(i,1)));
    const p=this.section(assets,'Reference');p.append(el('p','Nel prompt usa <Picture 1>, <Picture 2>, <Video 1>… Dei video viene usato l’inizio, per la durata richiesta (massimo 15 secondi), ricampionato a 24 fps. Il loro audio non viene usato come reference.'));
-   if(image<9)p.append(button('+ Immagine',()=>{c.refs.push({kind:'image',name:''});this.save();this.render();}));
-   if(video<3)p.append(button('+ Video',()=>{c.refs.push({kind:'video',name:''});this.save();this.render();}));
+   const drop=referenceDrop(this,p,{image:9,video:3}),grid=el('div','','dg-grid');p.append(grid);
+   let image=0,video=0;c.refs.forEach((r,i)=>this.asset(grid,r.kind==='image'?`Picture ${++image}`:`Video ${++video}`,r,'name',r.kind,()=>c.refs.splice(i,1)));
+   if(image<9)p.append(button('Aggiungi immagine',()=>drop.choose('image')));
+   if(video<3)p.append(button('Aggiungi video',()=>drop.choose('video')));
   }
   const prompt=this.section(body,'Esplora una direzione');this.field(prompt,'Prompt comune',c,'prompt',{multi:true,rows:7,hint:'Può contenere tutti i paragrafi necessari. In modalità Prompt diversi puoi lasciarlo vuoto e scrivere prompt completi nelle schede.'});
   this.field(prompt,'Tipo di confronto',c,'exploration',{options:[['seeds','Seed diversi · stesso prompt'],['prompts','Prompt diversi · stesso seed']],change:()=>this.render()});
@@ -370,7 +367,7 @@ export class DirectorStudio {
    for(let i=0;i<c.count;i++){c.trial_loras[String(i)] ||= [];this.loras(prompt,c.trial_loras[String(i)],`LoRA aggiuntive · provino ${i+1}`);}
   }else{
    c.variants.forEach((v,i)=>{const card=this.section(prompt,`Prompt ${i+1}`);this.field(card,'Testo completo',v,'text',{multi:true,rows:7});this.loras(card,v.loras ||= [],'LoRA aggiuntive');if(c.variants.length>1)card.append(button('Elimina questa variante',()=>{c.variants.splice(i,1);this.save();this.render();}));});
-   if(c.variants.length<10)prompt.append(button('+ Nuovo prompt',()=>{c.variants.push({text:'',loras:[]});this.save();this.render();const inputs=this.dialog.querySelectorAll('textarea');inputs[inputs.length-1]?.focus({preventScroll:true});}));
+   if(c.variants.length<10)prompt.append(button('Aggiungi prompt',()=>{c.variants.push({text:'',loras:[]});this.save();this.render();const inputs=this.dialog.querySelectorAll('textarea');inputs[inputs.length-1]?.focus({preventScroll:true});}));
   }
   const size=this.section(body,'Formato dei provini');const sizes=el('div','','dg-grid');size.append(sizes);
   this.field(sizes,'Proporzioni automatiche dalla prima immagine disponibile',c,'auto_aspect',{type:'checkbox',change:()=>this.render()});
