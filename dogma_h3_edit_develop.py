@@ -34,6 +34,14 @@ def approved_movie(root,trial):
         raise ValueError('Il file del provino scelto è cambiato: finale annullato.')
     return path
 
+def reference_movie(root,trial):
+    path=trial.get('corrected_path')
+    if not path:return approved_movie(root,trial)
+    path=Path(path).resolve()
+    if not path.is_relative_to(Path(root).resolve()) or not path.is_file():raise ValueError('Anteprima del provino recuperato non disponibile.')
+    if trial.get('corrected_video_sha256') and fingerprint(path)!=trial['corrected_video_sha256']:raise ValueError('Anteprima recuperata modificata.')
+    return path
+
 def guide_latent(director,root,trial,vae,plate,width,height,read_trial,interrupt):
     import torch
     from comfy.nested_tensor import NestedTensor
@@ -50,7 +58,7 @@ def guide_latent(director,root,trial,vae,plate,width,height,read_trial,interrupt
         origin='saved_latent'
     else:
         # Older trials have only their video. Encode that approved result explicitly.
-        frames=read_trial(movie)
+        frames=read_trial(reference_movie(root,trial))
         video=vae.encode(frames[:,:,:,:3]);del frames
         origin='encoded_legacy_trial'
     interrupt()

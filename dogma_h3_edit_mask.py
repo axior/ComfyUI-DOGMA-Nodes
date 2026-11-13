@@ -15,20 +15,44 @@ from scipy.ndimage import maximum_filter, minimum_filter, gaussian_filter
 
 
 def mask_defaults():
-    return dict(enabled=False, source='', grow=0, feather=0., opacity=.55, view='overlay')
+    return dict(enabled=False, source='', grow=0, feather=0., opacity=.55, view='overlay',
+                composite_mode='source', composite_grow=0, composite_feather=8., preview_area='composite')
 
 
 def mask_settings(value):
     settings = {**mask_defaults(), **(value or {})}
     if not settings['enabled']:
         return settings
-    grow, feather, opacity = (float(settings[k]) for k in ('grow', 'feather', 'opacity'))
-    if not all(math.isfinite(x) for x in (grow, feather, opacity)) or feather < 0 or not 0 <= opacity <= 1:
+    grow, feather, opacity, cg, cf = (float(settings[k]) for k in ('grow', 'feather', 'opacity', 'composite_grow', 'composite_feather'))
+    if not all(math.isfinite(x) for x in (grow, feather, opacity, cg, cf)) or min(feather,cf) < 0 or not 0 <= opacity <= 1:
         raise ValueError('Regolazioni maschera non valide: sfumatura positiva e opacità da 0 a 1.')
-    settings.update(grow=round(grow), feather=feather, opacity=opacity)
+    settings.update(grow=round(grow), feather=feather, opacity=opacity,composite_grow=round(cg),composite_feather=cf)
+    if settings['composite_mode'] not in ('source','generation') or settings['preview_area'] not in ('composite','generation'):
+        raise ValueError('Area maschera non valida.')
     if settings['view'] not in ('overlay', 'mask', 'source'):
         raise ValueError('Vista maschera non valida.')
     return settings
+
+
+def composite_settings(settings):
+    """Generation context must not silently replace protected frame geometry."""
+    if settings.get('composite_mode','source') == 'generation':return settings
+    return {**settings,'grow':settings.get('composite_grow',0),'feather':settings.get('composite_feather',8.)}
+
+
+def composite_mask(rgb,settings):
+    effective=composite_settings(settings)
+    if settings.get('composite_mode','source')=='generation':return processed_mask(rgb,effective)
+    alpha=processed_mask(rgb,{**effective,'feather':0.})
+    radius=float(effective['feather'])
+    if radius:
+        # Feather inward: never extend replacement over protected window bars
+        # or carriage walls merely to soften the moving matte edge.
+        from scipy.ndimage import distance_transform_edt
+        distance=distance_transform_edt(np.pad(alpha>0,1))[1:-1,1:-1]
+        x=np.clip(distance/radius,0,1).astype(np.float32)
+        alpha*=x*x*(3-2*x)
+    return alpha
 
 
 def validate_alignment(source, mask):
@@ -73,11 +97,13 @@ class FrameReader:
             self.close()
             raise ValueError('Video privo di fotogrammi leggibili.')
 
-    def at(self, second):
+    def at(self, second, nearest=False):
         while self.following is not None and float(self.following.time)-self.origin <= second+1e-6:
             self.current = self.following
             self.following = next(self.frames, None)
-        return self.current.to_ndarray(format='rgb24')
+        selected=self.current
+        if nearest and self.following is not None and abs(float(self.following.time)-self.origin-second)<abs(float(self.current.time)-self.origin-second):selected=self.following
+        return selected.to_ndarray(format='rgb24')
 
     def close(self):
         self.container.close()
@@ -116,7 +142,7 @@ def prepare_masked_latent(director, latent, vae, selected, mask_path, settings, 
         for i in range(len(selected)):
             interrupt()
             second = min(plan['start']+i/24,plan['last_source_time'])
-            alpha = resize_alpha(processed_mask(reader.at(second),settings),content_size)
+            alpha = resize_alpha(processed_mask(reader.at(second,nearest=True),settings),content_size)
             alpha = np.pad(alpha,((0,height-alpha.shape[0]),(0,width-alpha.shape[1])),mode='constant')
             masks[i] = torch.from_numpy(alpha)
     finally:
@@ -172,12 +198,13 @@ def write_segment(source, generated, dest, meta, plan, *, mask_path=None, settin
             stream = out.add_stream(codec, rate=Fraction(meta['fps_ratio']))
             stream.width, stream.height = size
             stream.pix_fmt = 'yuv420p' if preview else 'bgr0'
-            stream.time_base = Fraction(1, 1000000)
+            stream.time_base = Fraction(meta.get('time_base','1/1000000'))
             if preview: stream.options = {'crf':'18', 'preset':'veryfast'}
             for i, second in enumerate(times):
                 interrupt()
-                original = resize_rgb(src.at(second), size)
-                alpha = processed_mask(mask.at(second), settings) if mask else np.ones((size[1],size[0]),np.float32)
+                original = resize_rgb(src.at(second,nearest=True), size)
+                mask_fn=processed_mask if preview and settings.get('preview_area')=='generation' else composite_mask
+                alpha = mask_fn(mask.at(second,nearest=True), settings) if mask else np.ones((size[1],size[0]),np.float32)
                 next_time = times[i+1] if i+1 < len(times) else plan['end']
                 alpha = resize_alpha(alpha, size)*fade_weight(second, plan, fade, next_time-second)
                 # An approved trial already includes feather and temporal fades.
@@ -192,12 +219,12 @@ def write_segment(source, generated, dest, meta, plan, *, mask_path=None, settin
                         mix = alpha[...,None]*settings['opacity']
                         rgb = np.rint(original*(1-mix)+np.array([255,80,35])*mix).astype(np.uint8)
                 else:
-                    replacement = resize_rgb(gen.at(second-plan['start']), size)
+                    replacement = resize_rgb(gen.at(second-plan['start'],nearest=True), size)
                     mix = alpha[...,None]
                     rgb = np.rint(original*(1-mix)+replacement*mix).clip(0,255).astype(np.uint8)
                 frame = av.VideoFrame.from_ndarray(rgb, format='rgb24')
-                frame.pts = round((second-plan['start'])*1000000)
-                frame.time_base = Fraction(1,1000000)
+                frame.time_base = Fraction(meta.get('time_base','1/1000000'))
+                frame.pts = round((second-plan['start'])/frame.time_base)
                 for packet in stream.encode(frame): out.mux(packet)
                 progress(i+1,len(times))
             for packet in stream.encode(): out.mux(packet)

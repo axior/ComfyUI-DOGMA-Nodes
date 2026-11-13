@@ -1,9 +1,9 @@
-import { MaskEditor } from './dogma_h3_edit_mask.js?v=studio-1-0-46';
-import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-46';
+import { MaskEditor, compositeControls } from './dogma_h3_edit_mask.js?v=studio-1-0-47';
+import { EditComparison } from './dogma_h3_edit_compare.js?v=studio-1-0-47';
 import { api } from '../../scripts/api.js';
-import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-46';
-import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-46';
-export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-46';
+import { inputFile, viewURL, mediaPreview } from './dogma_h3_media.js?v=studio-1-0-47';
+import { frameIndex, frameTime, frameCount, snapSelection, stepTime, parseSelection } from './dogma_h3_timing.js?v=studio-1-0-47';
+export { snapSelection } from './dogma_h3_timing.js?v=studio-1-0-47';
 
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn)=>{const e=el('button',text);e.type='button';e.onclick=fn;return e;};
@@ -85,7 +85,9 @@ export function renderEditTrials(studio,body){
  const card=studio.section(body,`${selected.label} · ${selected.width} × ${selected.height}`);
  card.append(el('p',`Seed ${selected.seed} · selezione ${clock(selected.selection.start)} → ${clock(selected.selection.end)}`));
  if(selected.sampling)card.append(el('small',`${selected.sampling.steps} passaggi${selected.sampling.turbo?' · Turbo':''}${selected.elapsed_seconds!=null?' · '+selected.elapsed_seconds.toFixed(1)+' s':''}${selected.prepared_reused?' · preparazione riutilizzata':''}`));
- const mask=selected.config.edit.mask;if(mask?.enabled)card.append(el('small',`Maschera del provino: ${mask.source} · espansione ${mask.grow} px · feather ${mask.feather} px`));
+ if(selected.timing_repaired)card.append(el('p','Fotogrammi recuperati dai latenti salvati. Il confronto usa l’anteprima ricostruita da quei dati, senza una nuova generazione.'));
+ else if(selected.timing_version!==2)card.append(el('small',selected.latent?'Questo provino precedente verrà recuperato dai latenti salvati per correggere la fluidità, senza rilanciare MiniMax.':'Questo vecchio provino non contiene i dati necessari al recupero dei fotogrammi: genera un nuovo provino.'));
+ const mask=selected.config.edit.mask;if(mask?.enabled)card.append(el('small',`Maschera del provino: ${mask.source} · generazione: espansione ${mask.grow} px · feather ${mask.feather} px`));
  const prompt=el('details');prompt.append(el('summary','Prompt del provino'),el('pre',selected.prompt));card.append(prompt);
  studio.editCompare=new EditComparison(studio,card,selected);
  card.append(el('p',`Scelto per il finale: ${selected.label} · seed ${selected.seed}`));
@@ -93,8 +95,14 @@ export function renderEditTrials(studio,body){
  studio.config.edit.final_method ||= 'preserve';studio.config.edit.final_denoise ??= .25;
  studio.field(card,'Come preparare il finale',studio.config.edit,'final_method',{options:[['preserve','Mantieni edit · ingrandisci senza rigenerare'],['guided','Sviluppa con H3 · può cambiare l’edit'],['regenerate','Nuova generazione dal sorgente']],change:()=>studio.render(),hint:'Mantieni edit è predefinito: ingrandisce il risultato approvato senza sintetizzare nuovo dettaglio. Fuori dalla maschera usa il sorgente originale. Sviluppa con H3 parte dal provino, ma può aggiungere artefatti o cambiarne l’aspetto.'});
  const actual=selected.sampling||selected.config.edit;
+ if(mask?.enabled){
+  studio.config.edit.mask??={};compositeControls(studio,card,studio.config.edit.mask);
+  card.append(el('small','Il video maschera resta quello salvato nel provino. Queste regolazioni del montaggio si possono cambiare anche scegliendo Mantieni edit, senza una nuova generazione.'));
+ }
  if(studio.config.edit.final_method!=='preserve'){
- studio.field(card,'Campionamento alla dimensione originale',studio.config.edit,'final_mode',{options:[['match',`Come il provino scelto · ${actual.turbo?'Turbo':'standard'} · ${actual.steps} passaggi`],['turbo','Turbo Ref2Video · 4 passaggi'],['standard','Standard · senza Turbo']],change:()=>studio.render(),hint:'Questa scelta vale anche per un provino già generato. Prompt, seed, sorgente, reference e maschera restano quelli del provino scelto.'});
+ studio.config.edit.final_resolution ||= 'native';
+ studio.field(card,'Risoluzione di calcolo H3',studio.config.edit,'final_resolution',{options:[['native','Nativa H3 · fino a 768 px sul lato corto'],['trial',`Come il provino · ${selected.width} × ${selected.height}`],['source','Dimensione originale · sperimentale']],hint:'L’export resta alla dimensione originale. Il calcolo nativo resta nel regime documentato di H3; la zona generata viene adattata al sorgente sotto la maschera. Il calcolo diretto alla dimensione originale può ignorare la modifica.'});
+ studio.field(card,'Campionamento del passaggio H3',studio.config.edit,'final_mode',{options:[['match',`Come il provino scelto · ${actual.turbo?'Turbo':'standard'} · ${actual.steps} passaggi`],['turbo','Turbo Ref2Video · 4 passaggi'],['standard','Standard · senza Turbo']],change:()=>studio.render(),hint:'Questa scelta vale anche per un provino già generato. Prompt, seed, sorgente, reference e maschera restano quelli del provino scelto.'});
  if(studio.config.edit.final_mode==='standard')studio.field(card,'Passaggi del finale standard',studio.config.edit,'final_steps',{type:'number',min:1,max:100,step:1});
  if(studio.config.edit.final_method==='guided'){
   studio.field(card,'Intensità del raffinamento',studio.config.edit,'final_denoise',{type:'number',min:.01,max:1,step:.05,hint:'0,25 predefinito. Valori più alti danno più libertà al modello e possono cambiare il risultato.'});
@@ -124,6 +132,10 @@ export function renderEditResults(studio,body){
  card.append(el('p',`Risultato da ${origin} · seed ${selected.seed}${selected.sampling?' · '+(selected.sampling.turbo?'Turbo':'standard')+' · '+selected.sampling.steps+' passaggi':''}`));
  if(selected.mask_report?.enabled)card.append(el('small','Maschera video verificata nel campionamento e applicata alla ricomposizione.'));
  if(selected.development)card.append(el('p',selected.development.method==='preserve'?'Edit del provino mantenuto · ingrandimento senza nuova generazione':selected.development.method==='guided'?'Sviluppato dal provino approvato':'Nuova generazione dal sorgente'));
+ if(selected.export_encoding==='lossless_h264')card.append(el('p','Export senza perdita · fotogrammi originali e campioni colore protetti conservati. Il file può essere più grande.'));
+ else card.append(el('p','Export precedente: non include le correzioni della fluidità e del salvataggio senza perdita. Prepara nuovamente il finale dal provino.'));
+ if(selected.composite_mask_settings){const m=selected.composite_mask_settings;card.append(el('small',`Montaggio: ${m.composite_mode==='generation'?'area H3':'maschera separata'} · espansione ${m.grow} px · feather ${m.feather} px`));}
+ if(selected.generation_width)card.append(el('small',`Calcolo H3: ${selected.generation_width} × ${selected.generation_height} · export: ${selected.width} × ${selected.height}`));
  studio.editCompare=new EditComparison(studio,card,selected);
  card.append(el('small',selected.saved_path));
  if(selected.export_error)card.append(el('p','Il video completo è conservato nella sessione. La copia nella cartella scelta non è riuscita: '+selected.export_error));

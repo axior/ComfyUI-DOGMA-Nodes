@@ -1,11 +1,11 @@
 import { app } from "../../scripts/app.js";
 import { api } from "../../scripts/api.js";
-import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-46';
+import { renderEditor, renderEditResults, renderEditTrials } from './dogma_h3_video_edit.js?v=studio-1-0-47';
 
-import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-46';
+import { inputFile, viewURL, mediaPreview, releaseMedia } from './dogma_h3_media.js?v=studio-1-0-47';
 
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-46',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_h3_director_v134.css?v=studio-1-0-47',ROOT);document.head.append(css);
 const clone=x=>JSON.parse(JSON.stringify(x));
 const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 const button=(text,fn,cls='')=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;return b;};
@@ -199,7 +199,7 @@ export class DirectorStudio {
    }else if(!owned)this.pending=false;
    if(owned&&d.status==='running'&&d.run===this.data.run&&d.message===this.data.message&&!d.progress)d.progress=this.data.progress;
    if(render||JSON.stringify(d)!==JSON.stringify(this.data))this.applyState(d);else this.status();
-   if(this.editFinishWaiting&&!jobs.length&&!this.submitting){const intent=this.editFinishWaiting;this.editFinishWaiting=null;this.config.edit.selected_trial=intent.id;for(const [key,name]of Object.entries({mode:'final_mode',steps:'final_steps',method:'final_method',denoise:'final_denoise',output_dir:'final_output_dir'}))this.config.edit[name]=intent.options[key];this.pending=false;this.queue('finish');}
+   if(this.editFinishWaiting&&!jobs.length&&!this.submitting){const intent=this.editFinishWaiting;this.editFinishWaiting=null;this.config.edit.selected_trial=intent.id;for(const [key,name]of Object.entries({mode:'final_mode',steps:'final_steps',method:'final_method',denoise:'final_denoise',output_dir:'final_output_dir',resolution:'final_resolution'}))this.config.edit[name]=intent.options[key];this.config.edit.mask={...this.config.edit.mask,...intent.options.matte};this.pending=false;this.queue('finish');}
   }catch(e){if(epoch===this.epoch&&e.name!=='AbortError'){this.data.message='Stato non disponibile: '+e.message;this.status();}}
   finally{if(epoch===this.epoch)this.recovering=false;}
  }
@@ -270,7 +270,7 @@ export class DirectorStudio {
   if(!this.pending){await this.queue('finish');return;}
   this.promoting=true;this.status();
   try{
-   const options={mode:this.config.edit.final_mode||'match',steps:Number(this.config.edit.final_steps??20),method:this.config.edit.final_method||'preserve',denoise:Number(this.config.edit.final_denoise??.25),output_dir:this.config.edit.final_output_dir||this.config.output_dir||''};
+   const options={mode:this.config.edit.final_mode||'match',steps:Number(this.config.edit.final_steps??20),method:this.config.edit.final_method||'preserve',denoise:Number(this.config.edit.final_denoise??.25),output_dir:this.config.edit.final_output_dir||this.config.output_dir||'',resolution:this.config.edit.final_resolution||'native',matte:Object.fromEntries(Object.entries(this.config.edit.mask||{}).filter(([k])=>k.startsWith('composite_')))};
    const result=await this.request('/dogma/h3/v2/edit/promote',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({session:this.config.session,trial:id,batch:this.data.edit_batch?.id,options})});
    this.promotedTrial=id;
    if(result.status==='accepted'){

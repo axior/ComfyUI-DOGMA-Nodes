@@ -1,29 +1,40 @@
-import { mediaPreview } from './dogma_h3_media.js?v=studio-1-0-46';
+import { mediaPreview } from './dogma_h3_media.js?v=studio-1-0-47';
 
 const el=(tag,text='')=>{const e=document.createElement(tag);e.textContent=text;return e;};
 export function maskKey(c){
  const e=c.edit,m=e.mask;
- return JSON.stringify([e.source,e.start,e.end,e.fade,m.enabled,m.source,Number(m.grow),Number(m.feather),Number(m.opacity),m.view]);
+ return JSON.stringify([e.source,e.start,e.end,e.fade,m]);
+}
+
+export function compositeControls(studio,root,m){
+ m.composite_mode??='source';m.composite_grow??=0;m.composite_feather??=8;
+ studio.field(root,'Area da applicare sull’originale',m,'composite_mode',{options:[['source','Maschera caricata · regolazioni separate'],['generation','Stessa area usata per generare']],change:()=>{studio.save();studio.render();},hint:'L’espansione per H3 può includere il telaio e il vagone. Le regolazioni separate evitano di incollare anche quelle ricostruzioni sul video originale.'});
+ if(m.composite_mode==='source'){
+  studio.field(root,'Espandi / contrai il montaggio · pixel del sorgente',m,'composite_grow',{type:'number',step:1,hint:'0 rispetta l’area caricata, anche se la generazione usa un’espansione maggiore.'});
+  studio.field(root,'Feather del montaggio · pixel del sorgente',m,'composite_feather',{type:'number',min:0,step:1,hint:'Sfumatura verso l’interno: ammorbidisce il contorno senza estendere la modifica nelle aree nere. 0 mantiene il bordo netto.'});
+ }
 }
 
 export class MaskEditor{
  constructor(studio,parent){
   this.studio=studio;this.closed=false;this.abort=new AbortController();
   const c=studio.config,e=c.edit;
-  e.mask={enabled:false,source:'',grow:0,feather:0,opacity:.55,view:'overlay',...e.mask};
+  e.mask={enabled:false,source:'',grow:0,feather:0,opacity:.55,view:'overlay',preview_area:'composite',...e.mask};
   const m=e.mask,root=studio.section(parent,'Maschera video · opzionale');
   root.append(el('p','Carica il tuo video bianco e nero, allineato al sorgente completo. Bianco: usa la zona generata. Nero: conserva il video originale. I grigi miscelano i due. La maschera non viene generata dal workflow.'));
   studio.field(root,'Usa la maschera video',m,'enabled',{type:'checkbox',change:()=>{studio.save();studio.render();}});
   studio.asset(root,'Video maschera caricato da te',m,'source','video',()=>{m.source='';m.enabled=false;},()=>{m.enabled=true;});
   if(!m.enabled)return;
-  studio.field(root,'Espandi / contrai · pixel del sorgente',m,'grow',{type:'number',step:1,hint:'Valori positivi espandono il bianco; negativi lo contraggono. 0 mantiene il bordo.'});
-  studio.field(root,'Feather · sfumatura in pixel del sorgente',m,'feather',{type:'number',min:0,step:.5,hint:'Sfumatura applicata dopo espansione o contrazione.'});
+  studio.field(root,'Espandi / contrai per H3 · pixel del sorgente',m,'grow',{type:'number',step:1,hint:'Solo area di generazione: valori positivi espandono il bianco; negativi lo contraggono.'});
+  studio.field(root,'Feather per H3 · pixel del sorgente',m,'feather',{type:'number',min:0,step:.5,hint:'Sfumatura della maschera che guida il modello.'});
+  compositeControls(studio,root,m);
+  studio.field(root,'Area da verificare nell’overlay',m,'preview_area',{options:[['composite','Montaggio finale sull’originale'],['generation','Area di generazione H3']]});
   studio.field(root,'Vista dell’anteprima',m,'view',{options:[['overlay','Video + maschera arancione'],['mask','Solo maschera elaborata'],['source','Solo video originale']]});
   studio.field(root,'Opacità overlay · solo anteprima',m,'opacity',{type:'number',min:0,max:1,step:.05});
   this.go=el('button','Prepara video overlay');this.go.type='button';this.go.onclick=()=>this.start();
   this.notice=el('p');this.notice.setAttribute('role','status');this.progress=el('progress');if(this.progress)this.progress.hidden=true;
   this.previewRoot=el('div');root.append(this.go,this.notice,this.progress,this.previewRoot);
-  root.append(el('small','L’overlay usa la selezione, i bordi e il raccordo correnti. È una verifica della maschera senza avviare H3. La maschera guida sia la generazione nativa H3 sia la ricomposizione finale. Il modello usa una griglia più grossa: l’overlay mostra i bordi precisi della ricomposizione.'));
+  root.append(el('small','L’overlay verifica l’area scelta e il raccordo temporale senza avviare H3. Generazione e montaggio possono usare bordi diversi. Il modello usa una griglia più grossa; il montaggio rispetta la maschera nei pixel del sorgente.'));
   this.key=maskKey(c);this.refresh();
   const saved=studio.maskPreview;
   if(saved?.key===this.key)this.show(saved.file);
@@ -71,6 +82,6 @@ export class MaskEditor{
    this.poll=setTimeout(()=>this.pollJob(key),500);
   }catch(e){if(!this.closed&&e.name!=='AbortError'){this.cancel();this.notice.textContent=e.message;this.refresh();}}
  }
- show(file){this.player?.destroy();this.player=mediaPreview(file,{loop:true});this.previewRoot.replaceChildren(this.player.root);this.notice.textContent='Overlay pronto. L’arancione indica dove sarà applicato l’edit, inclusi i bordi sfumati.';}
+ show(file){this.player?.destroy();this.player=mediaPreview(file,{loop:true});this.previewRoot.replaceChildren(this.player.root);this.notice.textContent=this.studio.config.edit.mask.preview_area==='generation'?'Overlay pronto: area che guida H3. Può essere più ampia del montaggio finale.':'Overlay pronto: area applicata sull’originale, inclusi i bordi sfumati.';}
  destroy(){if(this.closed)return;this.closed=true;clearInterval(this.watch);this.cancel();this.abort.abort();this.player?.destroy();}
 }

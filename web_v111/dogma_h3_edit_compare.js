@@ -1,5 +1,5 @@
-import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-46';
-import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-46';
+import {mediaPreview,inputFile} from './dogma_h3_media.js?v=studio-1-0-47';
+import {frameIndex,frameTime,frameCount,stepTime} from './dogma_h3_timing.js?v=studio-1-0-47';
 const el=(tag,text='')=>{const e=document.createElement(tag);e.textContent=text;return e;};
 const button=(text,fn)=>{const e=el('button',text);e.type='button';e.onclick=fn;return e;};
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
@@ -17,7 +17,7 @@ export class EditComparison{
    const sampling=x.sampling||x.config?.edit;
    return `Finale da ${x.origin_trial_label||items.find(t=>t.id===x.trial)?.label||'provino precedente'} · seed ${x.seed}${sampling?' · '+(sampling.turbo?'Turbo':'standard')+' '+sampling.steps:''}`;
   };
-  this.pool=[{id:'original',label:'Originale',video:inputFile(source),offset:0,end:Infinity},...items.filter(x=>x.config?.edit?.source===source).map(x=>({id:x.id,label:label(x),video:x.video,offset:x.segment_only?x.selection.start:0,end:x.segment_only?x.selection.end:x.duration}))];
+  this.pool=[{id:'original',label:'Originale',video:inputFile(source),offset:0,end:Infinity},...items.filter(x=>x.config?.edit?.source===source).map(x=>({id:x.id,label:label(x),video:x.corrected_video||x.video,offset:x.segment_only?x.selection.start:0,end:x.segment_only?x.selection.end:x.duration}))];
   if(!this.pool.some(x=>x.id===item.id))this.pool.push({id:item.id,label:item.label,video:item.video,offset:item.segment_only?item.selection.start:0,end:item.segment_only?item.selection.end:item.duration});
   const saved=studio.editCompareChoice;
   let left=saved?.source===source?saved.left:'original',right=saved?.source===source&&saved.selected===item.id?saved.right:item.id;

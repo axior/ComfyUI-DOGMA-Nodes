@@ -16,8 +16,8 @@ import json
 from functools import lru_cache
 from .dogma_h3_edit_mask import mask_defaults, mask_settings, validate_alignment, write_segment, register_mask_routes, prepare_masked_latent, inspect_native_mask
 from .dogma_h3_edit_control import begin_batch, PromoteEdit, register_promotion_route
-from .dogma_h3_edit_sampling import SAMPLING_KEYS, final_options, is_ref_turbo
-from .dogma_h3_edit_develop import approved_movie, guide_latent, fingerprint
+from .dogma_h3_edit_sampling import SAMPLING_KEYS, final_options, is_ref_turbo, generation_size
+from .dogma_h3_edit_develop import approved_movie, reference_movie, guide_latent, fingerprint
 
 # Native H3 temporal grid; the selected interval is independent of this grid.
 # 362/24 exceeds the 15 s reference budget; keep the source reference <=15 s.
@@ -27,7 +27,7 @@ EDIT_FRAMES = tuple(range(5, 346, 17))
 def edit_defaults():
     return dict(source='', start=0., end=107/24, fade=.125, anchor_edges=True,
                 mask=mask_defaults(), selected_trial='', trial_edge=512, trial_mode='fast', trial_live_preview=False,final_mode='match',final_steps=20,
-                final_method='preserve',final_denoise=.25,final_output_dir='',
+                final_method='preserve',final_denoise=.25,final_output_dir='',final_resolution='native',
                 turbo='', turbo_strength=1., steps=20, sampler='res_multistep',
                 scheduler='simple', shift_video=12., shift_audio=3.,
                 lying=0., lying_start=.1, lying_end=.9)
@@ -87,7 +87,7 @@ def probe(path):
                     duration=duration, frames=len(times), frame_times=times, video_start=start,
                     video_offset=start-origin, audio=bool(container.streams.audio),
                     audio_codecs=[x.codec_context.name for x in container.streams.audio],
-                    generation_frames=list(EDIT_FRAMES), generation_fps=24,
+                    time_base=str(s.time_base),generation_frames=list(EDIT_FRAMES), generation_fps=24,
                     min_seconds=EDIT_FRAMES[0]/24, max_seconds=EDIT_FRAMES[-1]/24)
 
 
@@ -277,44 +277,9 @@ def save_patch(images,path,width,height,n,interrupt=lambda:None):
         for packet in stream.encode(): out.mux(packet)
 
 
-def compose(source,patch,dest,meta,plan,fade,interrupt=lambda:None):
-    """FFmpeg streams the full source; AI touches only the bounded patch.
-
-    Keep original timestamps (including VFR) and audio. Video is re-encoded CRF16;
-    it is not a bit-exact stream-copy. No frame interpolation or geometry change.
-    """
-    start=plan['start']+meta.get('video_offset',0)
-    end=plan['end']+meta.get('video_offset',0)
-    duration=plan['duration']; fade=min(float(fade),duration/2)
-    patch_filter=f'[1:v]trim=duration={duration:.9f},setpts=PTS-STARTPTS,format=rgba'
-    if fade:
-        patch_filter+=f',fade=t=in:st=0:d={fade:.9f}:alpha=1,fade=t=out:st={duration-fade:.9f}:d={fade:.9f}:alpha=1'
-    patch_filter+=f',setpts=PTS+{start:.9f}/TB[p];'
-    filters=patch_filter+f"[0:v:0][p]overlay=eof_action=pass:repeatlast=0:enable='gte(t,{start:.9f})*lt(t,{end:.9f})':format=auto[v]"
-    # MP4 supports AAC/MP3/ALAC/AC3/EAC3. Other source audio is encoded once.
-    copy_audio=all(x in ('aac','mp3','alac','ac3','eac3') for x in meta['audio_codecs'])
-    pix='yuv420p' if meta['width']%2==0 and meta['height']%2==0 else 'yuv444p'
-    args=[ffmpeg(),'-hide_banner','-loglevel','error','-nostdin','-y',
-          '-noautorotate','-i',str(source),'-i',str(patch),'-filter_complex',filters,
-          '-map','[v]','-map','0:a?','-map_metadata','0','-map_chapters','0',
-          '-c:v','libx264','-crf','16','-preset','medium','-pix_fmt',pix,
-          '-fps_mode','passthrough','-enc_time_base:v','1:1000000',
-          '-c:a','copy' if copy_audio else 'aac']
-    if not copy_audio: args+=['-b:a','320k']
-    args+=['-movflags','+faststart',str(dest)]
-    with tempfile.TemporaryFile() as log:
-        process=subprocess.Popen(args,stdout=subprocess.DEVNULL,stderr=log)
-        try:
-            while process.poll() is None:
-                interrupt();time.sleep(.1)
-            if process.returncode:
-                log.seek(0)
-                raise ValueError('Ricostruzione video fallita: '+log.read().decode(errors='replace')[-4000:])
-        except BaseException:
-            if process.poll() is None: process.kill();process.wait()
-            dest.unlink(missing_ok=True)
-            raise
-    return {'audio_copied':copy_audio,'fps':meta['fps'],'width':meta['width'],'height':meta['height']}
+def compose(source,patch,dest,meta,plan,fade,interrupt=lambda:None,mask_path=None,settings=None):
+    from .dogma_h3_edit_export import compose_lossless
+    return compose_lossless(source,patch,dest,meta,plan,fade,ffmpeg,interrupt,mask_path,settings)
 
 
 def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepared=None,checkpoint=lambda:None,sampling=None,guide=None):
@@ -331,11 +296,11 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
     interrupt()
     meta,plan=check_config(c,director.input_file)
     source=director.input_file(c['edit']['source'])
-    scale=min(1.,int(c['edit'].get('trial_edge',512))/max(meta['width'],meta['height'])) if trial else 1.
-    content_width=max(2,round(meta['width']*scale/2)*2);content_height=max(2,round(meta['height']*scale/2)*2)
+    content_width,content_height=generation_size(meta,c['edit'],trial)
     width=math.ceil(content_width/32)*32; height=math.ceil(content_height/32)*32
     n=plan['generation_frames']
     res=resources if resources is not None else director.load_resources(c)
+    if guide:ensure_trial_patch(director,root,guide,interrupt,vae=res['vae'])
     prompt=('integrated_multimodal_description:\n[Shot 1]\n'
             'The target video is an edited version of <Video 1>. Preserve its shot, camera, '
             'timing, motion and all elements not explicitly requested to change. '
@@ -351,18 +316,18 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
         if prepared is not None:prepared.clear()
         update('running','Lettura della sola selezione…',active='edit')
         selected=segment_tensor(source,plan['start'],n,width,height,interrupt,
-                                end=plan['end'],source_fps=meta['fps'],last_time=plan['last_source_time'],resize_size=(content_width,content_height) if trial else None)
+                                end=plan['end'],source_fps=meta['fps'],last_time=plan['last_source_time'],resize_size=(content_width,content_height))
         images={};videos={'ref_video_1':selected}
         if guide:
             # The reference must also show the approved edit; the old source wall
             # would otherwise keep competing with the transferred draft latent.
             gw,gh=guide['width'],guide['height']
-            videos['ref_video_1']=segment_tensor(approved_movie(root,guide),0,n,math.ceil(gw/32)*32,math.ceil(gh/32)*32,interrupt,
+            videos['ref_video_1']=segment_tensor(reference_movie(root,guide),0,n,math.ceil(gw/32)*32,math.ceil(gh/32)*32,interrupt,
                 end=plan['duration'],last_time=plan['last_source_time']-plan['start'])
         for r in c['refs']:
             if r['kind']=='image':
                 image=director.load_image(r['name'])
-                ref_edge=int(c['edit']['trial_edge']) if trial else (max(guide['width'],guide['height']) if guide else None)
+                ref_edge=max(guide['width'],guide['height']) if guide else max(content_width,content_height)
                 if ref_edge and max(image.shape[1:3])>ref_edge:
                     import torch.nn.functional as F
                     ratio=ref_edge/max(image.shape[1:3])
@@ -373,9 +338,9 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
                 p=director.input_file(r['name']);m=cached_probe(p)
                 rn=max(5,math.floor((m['duration']*24-5)/17)*17+5)
                 if rn>n:raise ValueError('Un video reference è più lungo del tratto editato: accorcialo prima di caricarlo.')
-                ratio=min(1.,int(c['edit']['trial_edge'])/max(m['width'],m['height'])) if trial else 1.
-                rw,rh=(max(32,round(m[k]*ratio/32)*32) if trial else math.ceil(m[k]/32)*32 for k in ('width','height'))
-                videos[f'ref_video_{len(videos)+1}']=segment_tensor(p,0,rn,rw,rh,interrupt,resize_size=(rw,rh) if trial else None)
+                ratio=min(1.,max(content_width,content_height)/max(m['width'],m['height']))
+                rw,rh=(max(32,round(m[k]*ratio/32)*32) for k in ('width','height'))
+                videos[f'ref_video_{len(videos)+1}']=segment_tensor(p,0,rn,rw,rh,interrupt,resize_size=(rw,rh))
         interrupt();update('running',f'Video Edit · {content_width} × {content_height} · preparazione Ref2VA')
         cond,latent=MiniMaxH3ReferenceToVideo.execute(res['clip'],prompt,width,height,n,'match',
             vae=res['vae'],audio_vae=res['audio'],ref_images=images,ref_videos=videos)
@@ -419,18 +384,18 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
         from .dogma_h3_edit_develop import pack
         latent_path=folder/'approved.pt'
         torch.save(pack(result),latent_path)
-    patch=folder/'segment.mkv'
+    patch=folder/'generated.nut'
     update('running','Video Edit · rimozione bordi tecnici e raccordo')
     job=re.sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA'
     settings=mask_settings(c['edit'].get('mask'))
     mask_path=director.input_file(settings['source']) if settings['enabled'] else None
-    mixed=folder/'composited.mkv'
+    mixed=folder/'composited.nut'
     final=folder/(job+('_H3_EDIT_TRIAL.mp4' if trial else '_H3_VIDEO_EDIT.mp4'))
     update('running','Composizione del provino' if trial else 'Ricostruzione del video completo · audio originale')
     try:
         save_patch(output,patch,content_width,content_height,n,interrupt)
         del result,output,cond,latent,model,res
-        if mask_path or trial:
+        if trial:
             write_segment(source,patch,mixed,meta,plan,mask_path=mask_path,settings=settings,
                           size=(content_width,content_height),fade=c['edit']['fade'],
                           interrupt=interrupt)
@@ -438,9 +403,10 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
             encode_trial(mixed,final,plan['duration'],interrupt)
             info=dict(audio_copied=False,fps=meta['fps'],width=content_width,height=content_height)
         else:
-            info=compose(source,mixed if mask_path else patch,final,meta,plan,0 if mask_path else c['edit']['fade'],interrupt)
+            info=compose(source,patch,final,meta,plan,c['edit']['fade'],interrupt,mask_path=mask_path,settings=settings)
     finally:
-        patch.unlink(missing_ok=True);mixed.unlink(missing_ok=True)
+        if not trial:patch.unlink(missing_ok=True)
+        mixed.unlink(missing_ok=True)
     timings['export']=round(time.monotonic()-exported,2)
     saved_path,export_error=(str(final.resolve()),None) if trial else export_final(director,final,c)
     return dict(id=uuid.uuid4().hex,label='Provino edit' if trial else 'Video completo · edit applicato',video=director.view_file(final),
@@ -449,7 +415,10 @@ def render_edit(c,root,st,update,progress,uid,trial=False,resources=None,prepare
                 segment_only=trial,prompt=c['prompt'],seed=int(c['seed']),sampling={k:effective[k] for k in SAMPLING_KEYS if k in effective},mask_report=mask_report,
                 elapsed_seconds=round(time.monotonic()-started,2),timings=timings,prepared_reused=reused,
                 latent=str(latent_path.relative_to(root)) if latent_path else None,
-                latent_sha256=fingerprint(latent_path) if latent_path else None,video_sha256=fingerprint(final),development=development,**info)
+                latent_sha256=fingerprint(latent_path) if latent_path else None,video_sha256=fingerprint(final),development=development,
+                raw_patch=str(patch.relative_to(root)) if trial else None,raw_patch_sha256=fingerprint(patch) if trial else None,
+                generation_width=content_width,generation_height=content_height,
+                **{**info,'timing_version':2})
 
 
 def export_final(director,final,c):
@@ -460,26 +429,61 @@ def export_final(director,final,c):
 
 
 def preserve_trial(c,root,selected,update,interrupt):
-    """Spatial resize only inside the saved edit mask; no model or new content."""
+    """Restitch the raw approved generation; never upscale a lossy/stuttering preview."""
     from . import dogma_h3_director_v134 as director
     import uuid
     source=director.input_file(c['edit']['source']);meta,plan=check_config(c,director.input_file)
     approved=approved_movie(root,selected)
+    raw=ensure_trial_patch(director,root,selected,interrupt)
     folder=root/'edits'/uuid.uuid4().hex;folder.mkdir(parents=True)
-    mixed=folder/'composited.mkv';final=folder/((__import__('re').sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA')+'_H3_VIDEO_EDIT.mp4')
+    final=folder/((__import__('re').sub(r'[^\w.-]+','_',c['job'])[:80] or 'DOGMA')+'_H3_VIDEO_EDIT.mp4')
     settings=mask_settings(c['edit'].get('mask'))
     mask_path=director.input_file(settings['source']) if settings['enabled'] else None
     update('running','Mantieni edit · ingrandimento del provino scelto, senza nuova generazione')
-    try:
-        write_segment(source,approved,mixed,meta,plan,mask_path=mask_path,settings=settings,
-                      size=(meta['width'],meta['height']),fade=0,precomposited=True,interrupt=interrupt)
-        info=compose(source,mixed,final,meta,plan,0,interrupt)
-    finally:mixed.unlink(missing_ok=True)
+    info=compose(source,raw,final,meta,plan,c['edit']['fade'],interrupt,mask_path=mask_path,settings=settings)
     saved_path,export_error=export_final(director,final,c)
     return dict(id=uuid.uuid4().hex,complete=True,kind='edit',video=director.view_file(final),
         saved_path=saved_path,export_error=export_error,config=copy.deepcopy(c),selection=plan,segment_only=False,
-        duration=meta['duration'],prompt=c['prompt'],seed=c['seed'],
-        development=dict(method='preserve',trial=selected['id'],input='approved_video',video_sha256=fingerprint(approved)),**info)
+        duration=meta['duration'],prompt=c['prompt'],seed=c['seed'],video_sha256=fingerprint(final),
+        generation_width=selected['width'],generation_height=selected['height'],
+        development=dict(method='preserve',trial=selected['id'],input='raw_approved_generation',raw_patch_sha256=fingerprint(raw),video_sha256=fingerprint(approved)),**info)
+
+
+def ensure_trial_patch(director,root,trial,interrupt,vae=None):
+    """1.0.46 kept raw latents: recover their original frames without rerunning H3."""
+    import uuid
+    raw=trial.get('raw_patch')
+    if raw:
+        path=(root/raw).resolve()
+        if not path.is_relative_to(root.resolve()) or not path.is_file():raise ValueError('Fotogrammi originali del provino non disponibili.')
+        if trial.get('raw_patch_sha256') and fingerprint(path)!=trial['raw_patch_sha256']:raise ValueError('Fotogrammi del provino modificati.')
+        return path
+    relative=trial.get('latent')
+    if not relative:raise ValueError('Questo vecchio provino non ha i latenti per recuperare i fotogrammi persi. Rigenera soltanto il provino con i nodi aggiornati.')
+    path=(root/relative).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():raise ValueError('Latenti del provino non disponibili; nessuna sostituzione con il sorgente.')
+    if trial.get('latent_sha256') and fingerprint(path)!=trial['latent_sha256']:raise ValueError('Latenti del provino modificati.')
+    import torch
+    from .dogma_h3_edit_develop import unpack
+    latent=unpack(torch.load(path,map_location='cpu',weights_only=True))
+    if vae is None:
+        import nodes
+        vae=nodes.VAELoader().load_vae(trial['config']['models']['vae'])[0]
+    interrupt();images,_=director.decode({'vae':vae},latent,False)
+    directory=root/'recovered'/uuid.uuid4().hex;directory.mkdir(parents=True)
+    raw=directory/'generated.nut';n=trial['selection']['generation_frames']
+    save_patch(images,raw,trial['width'],trial['height'],n,interrupt);del images,latent
+    c=trial['config'];settings=mask_settings(c['edit'].get('mask'));source=director.input_file(c['edit']['source'])
+    meta=cached_probe(source);plan=plan_interval(meta,c['edit']['start'],c['edit']['end'])
+    mixed=directory/'composited.nut';preview=directory/'RECOVERED_EDIT_TRIAL.mp4'
+    try:
+        write_segment(source,raw,mixed,meta,plan,mask_path=director.input_file(settings['source']) if settings['enabled'] else None,
+                      settings=settings,size=(trial['width'],trial['height']),fade=c['edit']['fade'],interrupt=interrupt)
+        encode_trial(mixed,preview,plan['duration'],interrupt)
+    finally:mixed.unlink(missing_ok=True)
+    trial.update(raw_patch=str(raw.relative_to(root)),raw_patch_sha256=fingerprint(raw),timing_repaired=True,
+                 corrected_video=director.view_file(preview),corrected_path=str(preview.resolve()),corrected_video_sha256=fingerprint(preview))
+    return raw
 
 
 def encode_trial(source,dest,duration,interrupt):
@@ -512,7 +516,8 @@ def run_edit(c,root,st,update,progress,uid):
         if options['method']=='guided':effective['denoise']=options['denoise']
         else:effective['denoise']=1.
         config['edit'].update({k:effective[k] for k in SAMPLING_KEYS if k in effective},final_mode=options['mode'],final_steps=options['steps'],
-                             final_method=options['method'],final_denoise=options['denoise'],final_output_dir=config['output_dir'])
+                             final_method=options['method'],final_denoise=options['denoise'],final_output_dir=config['output_dir'],final_resolution=options['resolution'])
+        config['edit']['mask']={**(config['edit'].get('mask') or {}),**options['matte']}
         if options['mode']=='standard' or is_ref_turbo(effective.get('turbo','')):
             config['common_loras']=[x for x in config['common_loras'] if not is_ref_turbo(x.get('name',''))]
         if config.get('models')!=c.get('models'):resources=None
