@@ -194,3 +194,15 @@ try:
     del _H3_134, _H3_134_NAMES
 except Exception as _h3_134_error:
     print("[DOGMA H3 Director V2] Unavailable; existing nodes preserved:", _h3_134_error)
+
+
+# Optional HDR finishing. Older Comfy versions retain all previous DOGMA nodes.
+try:
+    from .dogma_hdr_streaming import NODE_CLASS_MAPPINGS as _HDR151, NODE_DISPLAY_NAME_MAPPINGS as _HDR151_NAMES
+    if set(_HDR151).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA HDR: node ID collision")
+    NODE_CLASS_MAPPINGS.update(_HDR151)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_HDR151_NAMES)
+    del _HDR151, _HDR151_NAMES
+except Exception as _hdr151_error:
+    print("[DOGMA HDR] HDR nodes unavailable (requires ComfyUI >= 0.45.0); previous DOGMA nodes preserved:", _hdr151_error)

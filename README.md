@@ -147,3 +147,22 @@ comfy node install comfyui-dogma-nodes
 ## Notes
 
 The nodes use only PyTorch and ComfyUI's built-in sampler APIs. No extra Python dependencies are required.
+
+
+## HDR finishing (DOGMA Nodes 1.0.51)
+
+The HDR master workflow uses the same DOGMA Nodes Manager package on Windows and Linux.
+`DOGMAHDRColorChunkedV1`, `DOGMAHDRCheckpointV1`, and `DOGMAHDRSaveStreamingV1`
+require ComfyUI 0.45.0 or later. Update the existing package; no separate HDR pack
+or installer is required. Existing H3 workflows and node identifiers are unchanged.
+
+The master is a 3840x2160 ACEScg RGB HALF EXR sequence (ZIP lossless, AP1/D60).
+The optional MOV is ProRes 4444 HLG / BT.2020 with 10-bit 4:4:4 encoder input
+and original PCM24 audio; the EXR sequence is the 16-bit floating-point master.
+Finishing is sequential per frame, but native VAE decode still returns a complete batch.
+Output is under the actual Comfy output folder in `DOGMA_HDR_4K/master_XXXXX/`.
+
+The checkpoint is saved before decode in `DOGMA_HDR_4K/checkpoints/`.
+To recover an interrupted export, keep the same source loaded and enter the saved
+`.latent` path (relative to Comfy output) in `resume_from`; leave it empty for a new generation.
+Do not use `--fp16-intermediates` for the HDR master path.
