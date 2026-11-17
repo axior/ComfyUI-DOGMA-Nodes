@@ -166,3 +166,22 @@ The checkpoint is saved before decode in `DOGMA_HDR_4K/checkpoints/`.
 To recover an interrupted export, keep the same source loaded and enter the saved
 `.latent` path (relative to Comfy output) in `resume_from`; leave it empty for a new generation.
 Do not use `--fp16-intermediates` for the HDR master path.
+
+
+## HDR controls (DOGMA Nodes 1.0.52 / workflow V4)
+
+Choose everything in the main settings node: final resolution, source colour,
+EXR master colour, optional MOV transfer, seed, output directory/prefix.
+The model's internal ACEScct conversion is automatic and is separate from the
+linear ACEScg/Rec.709 EXR output and BT.2020 HLG/PQ MOV delivery.
+
+Original resolution means native source canvas (aligned internally to LTX),
+single-stage eight-step HDR generation and exact original output dimensions.
+The latent upsampler and second stage are skipped through a lazy selector.
+4K retains the official eight-plus-three two-stage path and UHD final geometry.
+Source transfer must match the source's export; sRGB and Rec.709 gamma 2.4 are
+different choices. EXRs remain linear 16-bit float; selecting a MOV transfer
+does not change the EXR master or the model's working encoding.
+The single visible settings group contains independent generation and delivery
+producers. Delivery-only changes reuse the model branch while Comfy's relevant
+cache is available; this is not persistent recovery across server restarts.

@@ -27,7 +27,7 @@ from comfy_api.latest._input_impl.video_types import (
 )
 from comfy_extras import nodes_images as ni
 
-VERSION = "1.0.51"
+VERSION = "1.0.52"
 SPACES = ["sRGB", "HDR", "HDR ACEScct", "HDR LogC3", "HDR PQ", "linear", "linear ACEScg"]
 log = logging.getLogger("DOGMA.HDR")
 
@@ -77,6 +77,8 @@ class DogmaHDRColorChunked(io.ComfyNode):
 
 
 def fit_frame(frame, source_width, source_height, target_width, target_height):
+    if (source_width, source_height) == (target_width, target_height):
+        return nodes.ImageScale().upscale(frame, "bicubic", target_width, target_height, "disabled")[0]
     width = 2 * math.floor(min(target_width, target_height * source_width / source_height) / 2)
     height = 2 * math.floor(min(target_height, target_width * source_height / source_width) / 2)
     if min(width, height) < 2:
@@ -128,7 +130,8 @@ def encode_audio(container, audio, count, rate):
 def export_frames(images, source_width, source_height, source_frames, fps,
                   filename_prefix="DOGMA_HDR_4K/master", save_mov=True, audio=None,
                   target_width=3840, target_height=2160, output_directory=None,
-                  progress=None, metadata=None):
+                  progress=None, metadata=None, exr_color_space="linear ACEScg",
+                  mov_color_space="HDR", mov_stem=None):
     """Sequential finishing; target size override is for isolated CPU QA only."""
     require_fp32()
     if images.ndim != 4 or images.shape[-1] != 3:
@@ -137,19 +140,28 @@ def export_frames(images, source_width, source_height, source_frames, fps,
         raise ValueError(f"Conteggio/proporzioni non validi: richiesti {source_frames} frame, decode disponibile {len(images)}.")
     if not math.isfinite(float(fps)) or fps <= 0:
         raise ValueError("FPS sorgente non valido.")
+    if exr_color_space not in ("linear ACEScg", "linear"):
+        raise ValueError("Il master EXR richiede ACEScg lineare o Rec.709 lineare.")
+    if mov_color_space not in ("HDR", "HDR PQ"):
+        raise ValueError("Il MOV HDR richiede HLG o PQ.")
+    mov_stem = mov_stem or "DOGMA_4K_HDR_HLG"
+    if Path(mov_stem).name != mov_stem or any(c in mov_stem for c in ('/', '\\')):
+        raise ValueError("Nome MOV non valido.")
     # Recover standard rational rates without rounding 24000/1001 to 23.976.
     rate = Fraction(float(fps)).limit_denominator(1000000)
     output_directory = output_directory or folder_paths.get_output_directory()
     job = create_job(filename_prefix, output_directory)
     exr_dir = job / "EXR"
     exr_dir.mkdir()
-    mov_path = job / "DOGMA_4K_HDR_HLG.mov"
-    mov_temporary = job / "DOGMA_4K_HDR_HLG.partial.mov"
+    mov_path = job / f"{mov_stem}.mov"
+    mov_temporary = job / f"{mov_stem}.partial.mov"
+    exr_label = "ACEScg AP1/D60" if exr_color_space == "linear ACEScg" else "Rec.709 D65"
+    mov_label = "HLG" if mov_color_space == "HDR" else "PQ"
     manifest = dict(version=VERSION, status="incomplete", completed_frames=0,
                     frames=source_frames, fps=str(rate), width=target_width, height=target_height,
-                    master="ACEScg AP1/D60 RGB HALF EXR ZIP16", source_width=source_width,
+                    master=f"{exr_label} RGB HALF EXR ZIP16", source_width=source_width,
                     source_height=source_height, decoded_frames=len(images),
-                    mov="ProRes 4444 BT.2020 HLG; 10-bit encoding input; PCM24 original audio" if save_mov else None,
+                    mov=f"ProRes 4444 BT.2020 {mov_label}; 10-bit encoding input; PCM24 original audio" if save_mov else None,
                     metadata=metadata or {})
     write_json(job / "manifest.json", manifest)
     container = None
@@ -162,7 +174,7 @@ def export_frames(images, source_width, source_height, source_frames, fps,
             stream.options = {"profile": "4444", "alpha_bits": "16"}
             stream.codec_context.thread_count = 2
             stream.time_base = 1 / rate
-            set_video_color_properties(stream.codec_context, "HDR")
+            set_video_color_properties(stream.codec_context, mov_color_space)
             # Register audio before the muxer writes the MOV header.
             # The PCM stream is created below by encode_audio, before video encode.
             if audio is not None:
@@ -172,24 +184,26 @@ def export_frames(images, source_width, source_height, source_frames, fps,
                 nodes.before_node_execution()
                 linear = convert_frame(images[index:index + 1], "HDR ACEScct", "linear ACEScg")
                 linear = fit_frame(linear, source_width, source_height, target_width, target_height)
-                if not torch.isfinite(linear).all():
+                master = linear if exr_color_space == "linear ACEScg" else convert_frame(linear, "linear ACEScg", exr_color_space)
+                if not torch.isfinite(master).all():
                     raise ValueError(f"Frame {index}: valori HDR NaN/Inf. Il file non viene dichiarato completo.")
                 # HALF cannot represent values outside +-65504. Do not silently clip.
-                if linear.abs().max() > 65504:
+                if master.abs().max() > 65504:
                     raise ValueError(f"Frame {index}: range oltre HALF (+-65504). Serve EXR float32 per questi valori.")
-                encoded = ni._encode_image(linear[0], "exr", "16-bit float", "linear ACEScg")
-                encoded = ni.inject_exr_metadata(encoded, None, None, "linear ACEScg")
+                encoded = ni._encode_image(master[0], "exr", "16-bit float", exr_color_space)
+                encoded = ni.inject_exr_metadata(encoded, None, None, exr_color_space)
+                del master
                 exr = exr_dir / f"frame_{index:06d}.exr"
                 temporary = exr.with_suffix(".exr.partial")
                 temporary.write_bytes(encoded)
                 os.replace(temporary, exr)
                 del encoded
                 if container is not None:
-                    hlg = convert_frame(linear, "linear ACEScg", "HDR")[0]
+                    hlg = convert_frame(linear, "linear ACEScg", mov_color_space)[0]
                     pixels = (hlg * 65535).clamp(0, 65535).numpy().astype(np.uint16)
                     frame = av.VideoFrame.from_ndarray(pixels, format="rgb48le")
                     frame = frame.reformat(format="yuv444p10le", dst_colorspace=BT2020_NCL)
-                    set_video_color_properties(frame, "HDR")
+                    set_video_color_properties(frame, mov_color_space)
                     frame.time_base = 1 / rate
                     frame.pts = index
                     container.mux(stream.encode(frame))

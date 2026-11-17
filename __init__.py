@@ -206,3 +206,15 @@ try:
     del _HDR151, _HDR151_NAMES
 except Exception as _hdr151_error:
     print("[DOGMA HDR] HDR nodes unavailable (requires ComfyUI >= 0.45.0); previous DOGMA nodes preserved:", _hdr151_error)
+
+
+# Explicit HDR source/master/delivery controls, additive to the 1.0.51 nodes.
+try:
+    from .dogma_hdr_controls import NODE_CLASS_MAPPINGS as _HDR152, NODE_DISPLAY_NAME_MAPPINGS as _HDR152_NAMES
+    if set(_HDR152).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA HDR controls: node ID collision")
+    NODE_CLASS_MAPPINGS.update(_HDR152)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_HDR152_NAMES)
+    del _HDR152, _HDR152_NAMES
+except Exception as _hdr152_error:
+    print("[DOGMA HDR controls] Unavailable; existing DOGMA nodes preserved:", _hdr152_error)
