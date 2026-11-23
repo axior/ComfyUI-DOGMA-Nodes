@@ -18,20 +18,43 @@ export function inputSpec(def,values,name){
  }
  return null;
 }
+export function viewParameters(file){
+ if(typeof file!=='string')return {filename:file.filename,subfolder:file.subfolder||'',type:file.type||'output'};
+ const parts=file.replaceAll('\\','/').split('/');return {filename:parts.pop(),subfolder:parts.join('/'),type:'input'};
+}
+export function choicesFor(spec){if(!spec)return null;if(Array.isArray(spec[0]))return spec[0];if(spec[0]==='COMBO')return spec[1].options;if(spec[0]==='COMFY_DYNAMICCOMBO_V3')return spec[1].options.map(o=>o.key);return null;}
+export function parameterSpecs(def,values){
+ const result={};const walk=(inputs,prefix='')=>{for(const [key,spec] of Object.entries({...inputs?.required,...inputs?.optional})){
+  const name=prefix+key;const choices=choicesFor(spec);
+  if(choices||['INT','FLOAT','BOOLEAN','STRING'].includes(spec[0]))result[name]=spec;
+  if(spec[0]==='COMFY_DYNAMICCOMBO_V3')walk(spec[1].options.find(o=>o.key===values[name])?.inputs,name+'.');
+ }};walk(def?.input);return result;
+}
+export function modelValues(def,values){
+ const specs=parameterSpecs(def,values),next={};for(const [key,spec] of Object.entries(specs)){
+  const choices=choicesFor(spec),value=values[key];next[key]=value!==undefined&&(!choices||choices.includes(value))?value:spec[1]?.default??choices?.[0]??(spec[0]==='BOOLEAN'?false:spec[0]==='STRING'?'':0);
+ }return next;
+}
+export function sortedChoices(key,values){
+ const list=[...new Set(values.map(String))];if(!/resolution|size_preset|size$/.test(key))return list;
+ const score=v=>{if(key==='model.size_preset'){const tier=v.match(/([\d.]+)K/i);return tier?+tier[1]:Infinity;}const dims=v.match(/(\d+)x(\d+)/);if(dims)return +dims[1]*+dims[2];const k=v.match(/([\d.]+)\s*[kK]/);if(k)return +k[1]*1000;const p=v.match(/(\d+)p/i);if(p)return +p[1];return Infinity;};return list.sort((a,b)=>score(a)-score(b));
+}
 export function todayCode(){const parts=new Intl.DateTimeFormat('en-GB',{timeZone:'Europe/Rome',day:'2-digit',month:'2-digit',year:'2-digit'}).formatToParts(new Date());return ['day','month','year'].map(k=>parts.find(p=>p.type===k).value).join('');}
 export function titleParts(s){return [s.project,s.scene,s.filename||'DOGMA',s.appendDate?(s.dateMode==='today'?todayCode():s.date||todayCode()):''].map(safeName).filter(Boolean);}
 export function prefix(s,f){return ['DOGMA/API',safeName(s.project),safeName(s.scene),titleParts(s).join('_')+'_'+f.short].filter(Boolean).join('/');}
 export function migrateState(raw){
- const s=copy(raw);s.schema=2;s.session ||= crypto.randomUUID();s.prompts ||= {image:s.prompt||'',video:''};s.mode ||= 'image';s.imageEdit ??= true;s.appendDate ??= false;s.date ||= todayCode();
+ const s=copy(raw);s.schema=3;s.session ||= crypto.randomUUID();s.prompts ||= {image:s.prompt||'',video:''};s.mode ||= 'image';s.imageEdit ??= true;s.appendDate ??= false;s.date ||= todayCode();
  s.dateMode ||= raw.schema===1?'manual':'today';if(s.dateMode==='today')s.date=todayCode();
- s.workspace ||= '';s.library ||= [];s.results ||= [];s.references ||= [];s.filters ||= {models:[],project:'*',scene:'*',kind:'all',workspace:'*'};s.density ??= 45;
+ s.workspace ||= '';s.library ||= [];s.results ||= [];s.references ||= [];s.filters ||= {models:[],project:'*',scene:'*',kind:'all',workspace:'*'};s.density ??= 45;s.workExpanded ??= false;
  for(const m of Object.values(s.models||{})){m.parameters ||= m.variants?.[0]||{};delete m.variants;delete m.editVariant;delete m.seedMode;}
  for(const [i,r] of s.references.entries()){r.kind ||= 'image';r.role ||= 'reference';const legacyMask=raw.schema===1&&i===0&&!!raw.maskEnabled;r.process ||= {enabled:legacyMask,mask:legacyMask,maskMode:legacyMask?'edit':'isolate',invert:false,flip:false,crop:false,resizeMpx:false,megapixels:1,expand:0,blur:0,fillHoles:true,targetWidth:0,targetHeight:0,source:'paint',prompt:'',segment:0,background:legacyMask?'#ff00ff':'#00ff00'};}
+ if(raw.schema<3)for(const r of [...s.references])if(r.kind==='image'&&r.modes?.includes('video')&&['first','last'].includes(r.role))s.references.push({...copy(r),role:'reference'});
  for(const r of s.results)r.kind ||= 'image';
  return s;
 }
 export function plannedJobs(s){return families(s).flatMap(f=>{const m=s.models[f.key];if(!m?.enabled)return[];const n=Number(m.quantity);if(!Number.isInteger(n)||n<1||n>64)throw new Error('Quantity deve essere da 1 a 64.');return Array.from({length:n},(_,i)=>({family:f.key,index:i,kind:s.mode==='video'?'video':'image'}));});}
-export function activeReferences(s){return s.references.filter(r=>r.enabled&&(!r.modes||r.modes.includes(s.mode))&&(s.mode==='video'||r.kind!=='video'));}
+export function visibleReferences(s){return s.references.filter(r=>(!r.modes||r.modes.includes(s.mode))&&(s.mode==='video'?(s.models.seedance?.engine==='frames'?r.kind==='image'&&['first','last'].includes(r.role):r.role!=='first'&&r.role!=='last'):r.kind!=='video'));}
+export function activeReferences(s){return visibleReferences(s).filter(r=>r.enabled);}
 export function validateState(s){
  if(!s.prompts[s.mode]?.trim())throw new Error('Scrivi un prompt.');
  if(!plannedJobs(s).length)throw new Error('Attiva almeno un modello.');
@@ -42,6 +65,8 @@ export function validateState(s){
   const limits={nano:14,gpt:16,flux:10,seedream:10},max=Math.min(...FAMILIES.filter(f=>s.models[f.key]?.enabled).map(f=>limits[f.key]));if(imgs.length>max)throw new Error(`I modelli attivi supportano fino a ${max} reference.`);
  }else {
   const m=s.models.seedance;
+  if(m.engine==='frames'&&imgs.length>2)throw new Error('Usa al massimo un First frame e un Last frame.');
+  if(m.engine==='frames'&&['first','last'].some(role=>imgs.filter(r=>r.role===role).length>1))throw new Error('Assegna un solo First frame e un solo Last frame.');
   if(m.engine==='frames'&&!imgs.length)throw new Error('Aggiungi almeno un frame immagine.');
   if(m.engine!=='frames'&&!refs.length)throw new Error('Aggiungi una reference immagine o video.');
   const p=m.engine==='frames'?m.frames:m.parameters;

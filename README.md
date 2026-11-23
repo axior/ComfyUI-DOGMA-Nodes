@@ -196,3 +196,7 @@ The original graphs are retained but inactive; use Run in the DOGMA panel.
 Includes image/video references, per-reference preparation, Seedance video,
 project library, workspace copies, Comfy credits/pricing and zoom comparison.
 Existing DOGMA and H3 workflows keep their identifiers.
+
+
+## API Platform V3 / 1.0.55
+Open DOGMA_API_PLATFORM_V3.json: one launcher node. The panel appears before asynchronous initialization. Folder navigation stays in the browser. Stop cancels DOGMA jobs; provider billing for already completed work still applies. Remaining time is an estimate from completed jobs when available.

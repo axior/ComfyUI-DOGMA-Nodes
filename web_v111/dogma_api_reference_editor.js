@@ -1,5 +1,5 @@
-import {copy} from './dogma_api_core.js?v=1.0.54';
-import {icon} from './dogma_api_icons.js?v=1.0.54';
+import {copy} from './dogma_api_core.js?v=1.0.55';
+import {icon} from './dogma_api_icons.js?v=1.0.55';
 
 export async function referenceEditor(ui,ref){
  const make=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
@@ -43,7 +43,7 @@ export async function referenceEditor(ui,ref){
  const preview=make('img','','dap-reference-preview');preview.alt='Anteprima della reference preparata';preview.hidden=!previewFile;if(previewFile)preview.src=ui.bridge.view(previewFile);right.append(preview);
  async function uploadMask(){if(!maskChanged)return;const out=make('canvas');out.width=mask.width;out.height=mask.height;const ctx=out.getContext('2d'),pixels=mc.getImageData(0,0,mask.width,mask.height);for(let i=0;i<pixels.data.length;i+=4){const v=pixels.data[i+3];pixels.data[i]=pixels.data[i+1]=pixels.data[i+2]=v;pixels.data[i+3]=255;}ctx.putImageData(pixels,0,0);const blob=await new Promise(resolve=>out.toBlob(resolve,'image/png'));if(!blob)throw new Error('Maschera non esportata.');const result=await ui.bridge.upload(new File([blob],'DOGMA_mask_'+Date.now()+'.png',{type:'image/png'}));draft.maskFile=result.file;maskChanged=false;}
  const footer=make('div','','dap-reference-footer');
- const previewButton=button('Anteprima',async()=>{previewButton.disabled=true;try{await uploadMask();const result=await ui.bridge.previewReference(ref,draft);if(!box.isConnected)return;previewFile=result.file;preview.src=ui.bridge.view(previewFile);preview.hidden=false;status.textContent=`${result.width} × ${result.height} · Anteprima aggiornata`;}catch(e){status.textContent=e.message;}finally{previewButton.disabled=false;}});
+ const previewButton=button('Anteprima',async()=>{previewButton.disabled=true;try{await uploadMask();const result=await ui.bridge.previewReference(ref,draft);if(!box.isConnected)return;previewFile=result.file;preview.src=ui.bridge.view(previewFile);await preview.decode();preview.hidden=false;status.textContent=`${result.width} × ${result.height} · Anteprima aggiornata`;}catch(e){preview.hidden=true;status.textContent='Anteprima non disponibile: '+e.message;}finally{previewButton.disabled=false;}});
  footer.append(button('Sostituisci file',()=>{box.close();ui.pickReferences(ref);}),previewButton,button('Applica',async()=>{try{await uploadMask();ref.process=copy(draft);ref.process.enabled=true;ref.processedPreview=previewFile;ui.save();ui.renderRefs();ui.refreshPrices();box.close();ui.note('Preparazione reference salvata.');}catch(e){status.textContent=e.message;}},'dap-primary'));
  box.append(footer);setTool('brush');draw();
 }

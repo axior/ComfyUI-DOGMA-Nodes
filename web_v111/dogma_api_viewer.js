@@ -1,4 +1,4 @@
-import { icon } from './dogma_api_icons.js?v=1.0.54';
+import { icon } from './dogma_api_icons.js?v=1.0.55';
 
 export function hoverCompare(host,generated,original){
  const a=document.createElement('img');a.src=generated;a.alt='Generata';a.draggable=false;a.className='dap-generated';host.append(a);host.classList.add('dap-compare-host');

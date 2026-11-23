@@ -16,6 +16,7 @@ import uuid
 
 _LOCK = threading.RLock()
 _WORKSPACES = set()
+_FRONTEND_CACHE = {}
 
 
 def _output():
@@ -63,9 +64,13 @@ def _record(metadata, files, kind):
                     shutil.copy2(source, destination)
                 exported.append(str(destination))
             sidecar = target / (identifier+'.dogma.json')
-            sidecar.write_text(json.dumps({**data, 'exported': exported}, ensure_ascii=False, indent=2), encoding='utf8')
+            sidecar.write_text(json.dumps({**data, 'exported': exported, 'dogma_schema':3, 'workspace_relative':target.relative_to(workspace).as_posix()}, ensure_ascii=False, indent=2), encoding='utf8')
         except (OSError, ValueError) as exc:
             warning = 'File salvato in Comfy; copia nella cartella di lavoro non riuscita: '+str(exc)
+    if not workspace:
+        for file in files:
+            target=root/file.get('subfolder','')
+            (target/(identifier+'.dogma.json')).write_text(json.dumps({**data,'dogma_schema':3},ensure_ascii=False,indent=2),encoding='utf8')
     data['exported'] = exported
     if warning:data['warning'] = warning
     path = _library() / (identifier+'.json')
@@ -74,6 +79,38 @@ def _record(metadata, files, kind):
         temporary.write_text(json.dumps(data, ensure_ascii=False), encoding='utf8')
         temporary.replace(path)
     return data
+
+
+def _import_workspace(root):
+    """Portable sidecars travel with the output; no inference from filename tags."""
+    root=Path(root).resolve();records=[];seen=set()
+    from itertools import chain
+    legacy=(p for directory in root.rglob('.library') if directory.is_dir() for p in directory.glob('*.json'))
+    for path in chain(root.rglob('*.dogma.json'),legacy):
+        if len(records)>=5000:break
+        if not path.resolve().is_relative_to(root):continue
+        try:
+            data=json.loads(path.read_text('utf8'));identifier=str(data.get('id',''))
+            if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',identifier):continue
+            if identifier in seen:continue
+            files=[];exported=[]
+            for index,original in enumerate(data.get('images',[])):
+                copies=data.get('exported',[])
+                name=Path(copies[index].replace('\\','/')).name if index<len(copies) else Path(original.get('filename','')).name
+                if path.parent.name=='.library':
+                    subfolder=str(original.get('subfolder','')).replace('\\','/')
+                    relative=subfolder.removeprefix('DOGMA/API').lstrip('/')
+                    candidate=(path.parent.parent/relative/name).resolve()
+                else:candidate=(path.parent/name).resolve()
+                if not candidate.is_relative_to(root) or not candidate.is_file():continue
+                files.append({'filename':name,'workspace':str(root),'relative':candidate.relative_to(root).as_posix(),'type':'workspace'})
+                exported.append(str(candidate))
+            if not files:continue
+            data.update(workspace=str(root),images=files,exported=exported,status='completed',imported=True)
+            (_library()/(identifier+'.json')).write_text(json.dumps(data,ensure_ascii=False),encoding='utf8')
+            records.append(data);seen.add(identifier)
+        except (ValueError,OSError,KeyError,TypeError):continue
+    return records
 
 
 def process_reference(image, mask, settings):
@@ -144,6 +181,11 @@ class DOGMAAPIReferenceV2:
         return (torch.stack(results),)
 
 
+def _save_prefix(data):
+    basename=Path(str(data.get('prefix') or 'DOGMA').replace('\\','/')).name
+    return '/'.join(['DOGMA','API',*[_clean(data.get(k)) for k in ('project','scene') if _clean(data.get(k))],basename])
+
+
 class DOGMAAPIImageOutputV2:
     @classmethod
     def INPUT_TYPES(cls):
@@ -157,7 +199,7 @@ class DOGMAAPIImageOutputV2:
         from nodes import SaveImage
         data=json.loads(metadata)
         # Same output and metadata behavior as the native SaveImage node.
-        result=SaveImage().save_images(images,data['prefix'],prompt,extra_pnginfo)
+        result=SaveImage().save_images(images,_save_prefix(data),prompt,extra_pnginfo)
         record=_record(metadata,result['ui']['images'],'image')
         return {'ui':{**result['ui'],'dogma_records':[record]},'result':()}
 
@@ -176,7 +218,7 @@ class DOGMAAPIVideoOutputV2:
         import folder_paths
         from comfy.cli_args import args
         data=json.loads(metadata);width,height=video.get_dimensions()
-        folder,filename,counter,subfolder,_=folder_paths.get_save_image_path(data['prefix'],str(_output()),width,height)
+        folder,filename,counter,subfolder,_=folder_paths.get_save_image_path(_save_prefix(data),str(_output()),width,height)
         filename=f'{filename}_{counter:05}_.mp4'
         saved_metadata=None if args.disable_metadata else {**(extra_pnginfo or {}),'prompt':prompt}
         video.save_to(str(Path(folder)/filename),format=Types.VideoContainer('mp4'),codec=Types.VideoCodec('auto'),metadata=saved_metadata)
@@ -187,6 +229,8 @@ class DOGMAAPIVideoOutputV2:
 
 def frontend_modules(web_root):
     """Discover the installed frontend's own shared billing/pricing modules."""
+    cache_key=str(web_root)
+    if cache_key in _FRONTEND_CACHE:return _FRONTEND_CACHE[cache_key]
     assets=Path(web_root)/'assets';result={}
     for path in assets.glob('*.js'):
         if path.name.startswith('useBillingContext-'):
@@ -198,6 +242,7 @@ def frontend_modules(web_root):
         elif path.name.startswith('creditsUtil-'):
             text=path.read_text('utf8');match=re.search(r'formatCreditsFromCents as (\w+)',text)
             if match:result['credits']={'file':path.name,'format':match[1]}
+    _FRONTEND_CACHE[cache_key]=result
     return result
 
 
@@ -211,7 +256,7 @@ def register_routes():
     @routes.get('/dogma/api/v2/catalog')
     async def catalog(request):
         capabilities=access.catalog(request,_output())
-        return web.json_response({'access':capabilities,'frontend':frontend_modules(PromptServer.instance.web_root),'version':'1.0.54'})
+        return web.json_response({'access':{**capabilities,'output_root':str(_output()/'DOGMA'/'API')},'frontend':frontend_modules(PromptServer.instance.web_root),'version':'1.0.55'})
 
     @routes.post('/dogma/api/v2/workspace')
     async def workspace(request):
@@ -220,42 +265,62 @@ def register_routes():
             path=access.output_path(request,data.get('path'),_output())
             if not path.is_dir():raise ValueError('Scegli una cartella esistente.')
             _WORKSPACES.add(str(path))
-            return web.json_response({'path':str(path)})
+            records=await asyncio.to_thread(_import_workspace,path)
+            return web.json_response({'path':str(path),'records':records})
         except (ValueError,OSError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
     @routes.post('/dogma/api/v2/choose-folder')
     async def choose(request):
-        access.browser(request);access.local(request)
-        if os.name!='nt':raise web.HTTPBadRequest(text='Usa il browser delle cartelle sul server.')
-        data=await request.json();initial=str(data.get('path') or _output())
-        script="""[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'DOGMA / Scegli la cartella di lavoro'
-$dialog.SelectedPath = $env:DOGMA_FOLDER_INITIAL
-$dialog.ShowNewFolderButton = $true
-if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Write($dialog.SelectedPath) }
-"""
-        def select():
-            env=os.environ.copy();env['DOGMA_FOLDER_INITIAL']=initial
-            result=subprocess.run(['powershell.exe','-NoProfile','-STA','-WindowStyle','Hidden','-Command',script],capture_output=True,env=env,encoding='utf8',timeout=300,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            if result.returncode:raise ValueError('La scelta cartella non è riuscita.')
-            return result.stdout.strip()
-        try:
-            selected=await asyncio.to_thread(select)
-            if selected:_WORKSPACES.add(str(Path(selected).resolve()))
-            return web.json_response({'path':selected,'cancelled':not selected})
-        except (ValueError,OSError,subprocess.TimeoutExpired) as exc:raise web.HTTPBadRequest(text=str(exc))
+        access.browser(request)
+        return web.json_response({'browse':True})
 
     @routes.get('/dogma/api/v2/folders')
     async def folders(request):
         access.browser(request)
         try:
-            path=access.output_path(request,request.query.get('path'),_output())
+            path=access.output_path(request,request.query.get('path') or str(_library().parent),_output())
             if not path.is_dir():raise ValueError('Cartella inesistente.')
-            dirs=[{'name':p.name,'path':str(p.resolve())} for p in path.iterdir() if p.is_dir() and (access.is_local(request) or p.resolve().is_relative_to(_output()))]
-            parent=str(path.parent) if access.is_local(request) or path.parent.is_relative_to(_output()) else None
-            return web.json_response({'path':str(path),'parent':parent,'directories':sorted(dirs,key=lambda d:d['name'].lower())})
+            local=access.is_local(request)
+            def scan():
+                dirs=[];files=[]
+                for p in path.iterdir():
+                    if p.name.startswith('.'):continue
+                    try:
+                        if not local and not p.resolve().is_relative_to(_output()):continue
+                        if p.is_dir():dirs.append({'name':p.name,'path':str(p.resolve())})
+                        elif p.is_file():files.append({'name':p.name})
+                    except OSError:continue
+                parent=str(path.parent) if path.parent!=path and (local or path.parent.is_relative_to(_output())) else None
+                roots=[]
+                if local and os.name=='nt':
+                    roots=[{'name':letter+':','path':letter+':/'} for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' if Path(letter+':/').is_dir()]
+                return {'path':str(path),'parent':parent,'roots':roots,'directories':sorted(dirs,key=lambda d:d['name'].lower()),'files':sorted(files,key=lambda d:d['name'].lower())[:5000]}
+            return web.json_response(await asyncio.to_thread(scan))
+        except (ValueError,OSError) as exc:raise web.HTTPBadRequest(text=str(exc))
+
+    @routes.post('/dogma/api/v2/mkdir')
+    async def mkdir(request):
+        access.browser(request);data=await request.json()
+        try:
+            parent=access.output_path(request,data.get('path'),_output())
+            name=str(data.get('name','')).strip()
+            if not name or name in ('.','..') or re.search(r'[<>:"/\\|?*]',name) or name.endswith(('.', ' ')):raise ValueError('Nome cartella non valido.')
+            target=parent/name
+            if not parent.is_dir():raise ValueError('Cartella superiore inesistente.')
+            target.mkdir(exist_ok=False)
+            return web.json_response({'path':str(target.resolve())})
+        except (ValueError,OSError) as exc:raise web.HTTPBadRequest(text=str(exc))
+
+    @routes.get('/dogma/api/v2/workspace-media')
+    async def workspace_media(request):
+        access.fetch_site(request)
+        try:
+            root=access.output_path(request,request.query.get('workspace'),_output())
+            if str(root) not in _WORKSPACES:raise ValueError('Riseleziona la cartella di lavoro.')
+            relative=request.query.get('relative','');file=(root/relative).resolve()
+            if not file.is_relative_to(root) or file.suffix.lower() not in ('.png','.jpg','.jpeg','.webp','.mp4','.webm','.mov'):raise ValueError('File non valido.')
+            if not file.is_file():raise ValueError('File non disponibile.')
+            return web.FileResponse(file)
         except (ValueError,OSError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
     @routes.get('/dogma/api/v2/library')
@@ -271,7 +336,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console
 
     @routes.post('/dogma/api/v2/open-output')
     async def open_output(request):
-        access.browser(request);access.local(request)
+        access.browser(request)
         data=await request.json();identifier=str(data.get('id',''))
         if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}',identifier):raise web.HTTPBadRequest(text='Output non valido.')
         try:
@@ -279,9 +344,8 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console
             index=max(0,int(data.get('index',0)));copies=record.get('exported',[])
             file=Path(copies[index]) if index<len(copies) else _output()/record['images'][index].get('subfolder','')/record['images'][index]['filename']
             if not file.is_file():raise ValueError('Il file è stato spostato o rimosso.')
-            if os.name=='nt':subprocess.Popen(['explorer.exe','/select,',str(file)],creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-            else:raise ValueError('Esplora risorse è disponibile sul Comfy Windows locale.')
-            return web.json_response({'ok':True})
+            access.output_path(request,str(file.parent),_output())
+            return web.json_response({'path':str(file.parent),'filename':file.name})
         except (ValueError,OSError,IndexError,KeyError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
     @routes.post('/dogma/api/v2/reference-preview')
@@ -291,7 +355,7 @@ if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { [Console
         def prepare():
             source=Path(folder_paths.get_annotated_filepath(data['file'])).resolve()
             if not source.is_relative_to(Path(folder_paths.get_input_directory()).resolve()):raise ValueError('Reference esterna a input.')
-            rgba=Image.open(source).convert('RGBA');mask=ImageOps.invert(rgba.getchannel('A'))
+            rgba=ImageOps.exif_transpose(Image.open(source)).convert('RGBA');mask=ImageOps.invert(rgba.getchannel('A'))
             settings=data['settings']
             if settings.get('source')=='prompt' and settings.get('mask'):raise ValueError('La maschera da testo viene calcolata da SAM3 durante Run. Per l’anteprima usa una maschera dipinta.')
             if settings.get('maskFile'):
