@@ -13,9 +13,10 @@ def versioned_urls(urls, extension_dirs, web_directory):
     result = []
     for url in urls:
         parts = urlsplit(url)
-        # This package has one entry module. Do not rewrite third-party URLs.
-        if any(parts.path == prefix + "dogma_categories.js" for prefix in prefixes):
-            digest = hashlib.sha256((root / "dogma_categories.js").read_bytes()).hexdigest()[:20]
+        # Version only this package's own entry modules. Do not rewrite third-party URLs.
+        entry = parts.path.rsplit("/", 1)[-1]
+        if entry in ("dogma_categories.js", "dogma_api_platform.js") and any(parts.path == prefix + entry for prefix in prefixes):
+            digest = hashlib.sha256((root / entry).read_bytes()).hexdigest()[:20]
             query = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
                      if k != "dogma_build"]
             query.append(("dogma_build", digest))

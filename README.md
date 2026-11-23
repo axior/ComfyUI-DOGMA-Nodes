@@ -185,3 +185,14 @@ does not change the EXR master or the model's working encoding.
 The single visible settings group contains independent generation and delivery
 producers. Delivery-only changes reuse the model branch while Comfy's relevant
 cache is available; this is not persistent recovery across server restarts.
+
+
+## API Platform V2 / 1.0.54
+
+Open DOGMA_API_PLATFORM_V2.json and press APRI DOGMA / API PLATFORM.
+Quantity creates independent native asynchronous partner-node branches inside
+one prompt, with a distinct seed per request. Provider limits still apply.
+The original graphs are retained but inactive; use Run in the DOGMA panel.
+Includes image/video references, per-reference preparation, Seedance video,
+project library, workspace copies, Comfy credits/pricing and zoom comparison.
+Existing DOGMA and H3 workflows keep their identifiers.

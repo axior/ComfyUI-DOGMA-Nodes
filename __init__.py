@@ -218,3 +218,28 @@ try:
     del _HDR152, _HDR152_NAMES
 except Exception as _hdr152_error:
     print("[DOGMA HDR controls] Unavailable; existing DOGMA nodes preserved:", _hdr152_error)
+
+
+# API Platform: additive launcher; all existing node identifiers remain valid.
+try:
+    from .dogma_api_platform import NODE_CLASS_MAPPINGS as _API153, NODE_DISPLAY_NAME_MAPPINGS as _API153_NAMES
+    if set(_API153).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA API Platform: node ID collision")
+    NODE_CLASS_MAPPINGS.update(_API153)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_API153_NAMES)
+    del _API153, _API153_NAMES
+except Exception as _api153_error:
+    print("[DOGMA API Platform] Launcher unavailable; previous DOGMA nodes preserved:", _api153_error)
+
+
+# API Platform V2: reference preparation, project library and native video output.
+try:
+    from .dogma_api_platform_v2 import NODE_CLASS_MAPPINGS as _APIV2, NODE_DISPLAY_NAME_MAPPINGS as _APIV2_NAMES, register_routes as _APIV2_ROUTES
+    if set(_APIV2).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA API V2: node ID collision")
+    _APIV2_ROUTES()
+    NODE_CLASS_MAPPINGS.update(_APIV2)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_APIV2_NAMES)
+    del _APIV2, _APIV2_NAMES, _APIV2_ROUTES
+except Exception as _apiv2_error:
+    print("[DOGMA API V2] Unavailable; previous DOGMA nodes preserved:", _apiv2_error)

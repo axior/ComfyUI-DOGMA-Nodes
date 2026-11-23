@@ -1,0 +1,112 @@
+{
+  "schema": 2,
+  "session": "",
+  "mode": "image",
+  "imageEdit": true,
+  "project": "",
+  "scene": "",
+  "filename": "DOGMA",
+  "date": "",
+  "appendDate": false,
+  "workspace": "",
+  "prompts": {
+    "image": "",
+    "video": ""
+  },
+  "density": 55,
+  "models": {
+    "nano": {
+      "enabled": true,
+      "expanded": false,
+      "quantity": 2,
+      "parameters": {
+        "model": "gemini-3-pro-image-preview",
+        "seed": 637339876168947,
+        "aspect_ratio": "16:9",
+        "resolution": "2K",
+        "response_modalities": "IMAGE",
+        "system_prompt": "Follow the user prompt and the assigned roles of the reference images precisely."
+      }
+    },
+    "gpt": {
+      "enabled": true,
+      "expanded": false,
+      "quantity": 2,
+      "parameters": {
+        "model": "gpt-image-2",
+        "model.size": "2048x1152",
+        "model.custom_width": 1920,
+        "model.custom_height": 1088,
+        "model.background": "auto",
+        "model.quality": "high",
+        "n": 1,
+        "seed": 726834962
+      }
+    },
+    "flux": {
+      "enabled": true,
+      "expanded": false,
+      "quantity": 2,
+      "parameters": {
+        "aspect_ratio": "auto",
+        "resolution": "2K",
+        "grounding": true,
+        "safety_tolerance": 4,
+        "seed": 390115469
+      }
+    },
+    "seedream": {
+      "enabled": true,
+      "expanded": true,
+      "quantity": 2,
+      "parameters": {
+        "model": "seedream 5.5",
+        "model.size_preset": "Custom",
+        "model.width": 2048,
+        "model.height": 1152,
+        "model.background": "auto",
+        "model.seed": 42,
+        "model.watermark": false
+      }
+    },
+    "seedance": {
+      "enabled": true,
+      "expanded": true,
+      "quantity": 1,
+      "engine": "reference",
+      "parameters": {
+        "model": "Seedance 2.5",
+        "model.resolution": "1080p",
+        "model.ratio": "adaptive",
+        "model.duration": 15,
+        "model.generate_audio": false,
+        "model.task_type": "edit",
+        "model.output_format": "mp4",
+        "model.auto_downscale": false,
+        "model.auto_upscale": false,
+        "seed": 1982892718,
+        "watermark": false
+      },
+      "frames": {
+        "model": "Seedance 2.5",
+        "model.resolution": "720p",
+        "model.duration": 4,
+        "model.generate_audio": false,
+        "model.output_format": "mp4",
+        "seed": 1439633762,
+        "watermark": false,
+        "first_frame_asset_id": "",
+        "last_frame_asset_id": ""
+      }
+    }
+  },
+  "references": [],
+  "results": [],
+  "filters": {
+    "models": [],
+    "project": "*",
+    "scene": "*",
+    "kind": "all",
+    "workspace": "*"
+  }
+}
