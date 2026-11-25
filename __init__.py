@@ -243,3 +243,15 @@ try:
     del _APIV2, _APIV2_NAMES, _APIV2_ROUTES
 except Exception as _apiv2_error:
     print("[DOGMA API V2] Unavailable; previous DOGMA nodes preserved:", _apiv2_error)
+
+
+# Standalone Seedance fix: same engine as API Platform, one VIDEO input.
+try:
+    from .dogma_video_fix_node import NODE_CLASS_MAPPINGS as _FIX158, NODE_DISPLAY_NAME_MAPPINGS as _FIX158_NAMES
+    if set(_FIX158).intersection(NODE_CLASS_MAPPINGS):
+        raise RuntimeError("DOGMA Seedance fix: node ID collision")
+    NODE_CLASS_MAPPINGS.update(_FIX158)
+    NODE_DISPLAY_NAME_MAPPINGS.update(_FIX158_NAMES)
+    del _FIX158, _FIX158_NAMES
+except Exception as _fix158_error:
+    print("[DOGMA Seedance fix] Unavailable; previous DOGMA nodes preserved:", _fix158_error)
