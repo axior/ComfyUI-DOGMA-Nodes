@@ -1,5 +1,5 @@
-import { icon } from './dogma_api_icons.js?v=1.0.56';
-import {savedFilename} from './dogma_api_core.js?v=1.0.56';
+import { icon } from './dogma_api_icons.js?v=1.0.57';
+import {savedFilename} from './dogma_api_core.js?v=1.0.57';
 
 export async function copyFullImage(url){
  if(!navigator.clipboard?.write||!globalThis.ClipboardItem)throw new Error('La copia immagini richiede HTTPS o localhost. Puoi scaricare il file a piena risoluzione.');

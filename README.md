@@ -204,3 +204,12 @@ Open DOGMA_API_PLATFORM_V3.json: one launcher node. The panel appears before asy
 
 ## API Platform V4 / 1.0.56
 Open DOGMA_API_PLATFORM_V4.json: one launcher node. The panel appears before asynchronous initialization. Folder navigation stays in the browser. Stop cancels DOGMA jobs; provider billing for already completed work still applies. Remaining time is an estimate from completed jobs when available.
+
+
+## API Platform V5 / 1.0.57 — selective video repair
+
+Enable **Correggi scatti** in Video to save both the original and `_FIX.mp4`. Both Ref → Video and First / Last frame use the same local repair. The setting does not change paid API inputs, quantities or seeds. A verified unchanged copy is produced when no reliable problem is detected. If processing fails or is stopped, the original remains available and the panel shows a warning.
+
+The detector operates on small previews; RIFE reconstructs only selected frames at source resolution. Reliable pans with repeated jumps may additionally receive small camera translations, capped at 0.4% of width/height. This extends a thin edge strip by reflection instead of cropping or zooming. Camera refinement and interpolation share one encoding pass. Clean clips, poorly tracked shots, zooms and reversing camera paths are not stabilized. Frame count, timestamps, source bit depth and audio packet identity are checked before accepting the second file. A motion-based quality gate is an additional check, not a guarantee against every possible visual artifact. The method is independent of source fps and has no fixed clip-duration setting; processing time and memory grow with frame count and resolution. It does not impose 24 fps. CUDA and NVIDIA video encoding provide the fast path; CPU/software fallback is slower. First use includes model download and GPU initialization. No video is uploaded to another service. Generative deformations or newly invented content cannot be reliably restored by a cadence repair.
+
+RIFE 4.26 code/weights: https://github.com/hzwer/Practical-RIFE (MIT; LICENSE_RIFE.txt). Verified weights are automatically cached under `models/DOGMA/rife`. Architecture derived from the official model archive, revision `01fdc7e97404120c243c3ea7b427046e5dc7643e`. DOGMA motion detection, timestamp planning and integration are separate from RIFE inference. No other ComfyUI interpolation extension is required.

@@ -1,7 +1,7 @@
-import {ALL_FAMILIES,copy,families,plannedJobs,compileBatch,validateState,titleParts,todayCode,filterResults,migrateState,activeReferences,visibleReferences,choicesFor,sortedChoices,safeName,orderResults,savedFilename,preparedMask} from './dogma_api_core.js?v=1.0.56';
-import {icon} from './dogma_api_icons.js?v=1.0.56';
-import {hoverCompare,openViewer} from './dogma_api_viewer.js?v=1.0.56';
-import {referenceEditor} from './dogma_api_reference_editor.js?v=1.0.56';
+import {ALL_FAMILIES,copy,families,plannedJobs,compileBatch,validateState,titleParts,todayCode,filterResults,migrateState,activeReferences,visibleReferences,choicesFor,sortedChoices,safeName,orderResults,savedFilename,preparedMask} from './dogma_api_core.js?v=1.0.57';
+import {icon} from './dogma_api_icons.js?v=1.0.57';
+import {hoverCompare,openViewer} from './dogma_api_viewer.js?v=1.0.57';
+import {referenceEditor} from './dogma_api_reference_editor.js?v=1.0.57';
 
 export const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
 export const btn=(text,fn,cls='',aria=text)=>{const b=el('button',text,cls);b.type='button';b.onclick=fn;b.setAttribute('aria-label',aria);b.title=aria;return b;};
@@ -88,6 +88,7 @@ export class PlatformUI {
   const choose=ib('folder','Scegli cartella di lavoro',()=>this.chooseWorkspace(),'dap-workspace-button');choose.append(el('span',s.workspace||'Scegli cartella di lavoro'));const folderRow=el('div','','dap-workspace-row'),explorer=btn('Esplora file',()=>this.openWorkspaceExplorer(),'dap-workspace-explorer','Apri in Esplora file');explorer.append(icon('external'));folderRow.append(choose,explorer);work.append(folderRow);
   const models=el('section','','dap-section dap-models');models.append(el('div','MODELS','dap-label'));for(const f of families(s))models.append(this.model(f));
   if(s.mode==='video'){const choice=el('section','','dap-video-choice');choice.append(el('div','WORKFLOW VIDEO','dap-label'));for(const [key,label] of [['reference','Ref → Video'],['frames','First / Last frame']]){const b=btn(label,()=>{s.models.seedance.engine=key;this.save();this.renderControls();this.refreshPrices();},key===s.models.seedance.engine?'active':'');choice.append(b);}c.append(choice);}
+  if(s.mode==='video'){const fix=el('label','','dap-video-repair');fix.append(this.toggle('Correggi scatti',s.videoRepair,v=>{s.videoRepair=v;this.save();},'span'),el('span','Correggi scatti'));fix.append(el('small','Salva anche una seconda copia · durata e fps originali'));c.append(fix);}
   c.append(refs,prompt,workLabel,workSection,models);
  }
  filenamePreview(){return [...titleParts(this.state),'MODEL',this.state.mode==='video'?'00001.mp4':'00001.png'].filter(Boolean).join('_');}
@@ -169,7 +170,7 @@ export class PlatformUI {
    const media=el('div','','dap-card-media');
    if(job.kind==='video'){
     const video=el('video');video.src=this.bridge.view(file);video.muted=true;video.preload='metadata';video.loop=true;video.playsInline=true;media.append(video);
-    const duration=el('span','','dap-video-duration');video.onloadedmetadata=()=>{duration.textContent=Number.isFinite(video.duration)?`${Math.floor(video.duration/60)}:${String(Math.floor(video.duration%60)).padStart(2,'0')}`:'';};media.append(icon('play'),duration);
+    const duration=el('span','','dap-video-duration');video.onloadedmetadata=()=>{duration.textContent=Number.isFinite(video.duration)?`${Math.floor(video.duration/60)}:${String(Math.floor(video.duration%60)).padStart(2,'0')}`:'';};media.append(icon('playCircle'),duration);
     media.onpointerenter=()=>{video.play().then(()=>media.classList.add('playing')).catch(()=>{});};media.onpointerleave=()=>{video.pause();media.classList.remove('playing');};
    }else{const base=job.imageEdit&&job.baseReference?(job.baseReference.comparePreview||this.bridge.view(job.baseReference.processedPreview||job.baseReference.file)):null;const comparison=hoverCompare(media,this.bridge.view(file),base);comparison.image.loading='lazy';comparison.image.decoding='async';comparison.image.alt=title;}
    media.onclick=()=>openViewer(this,{job,file,index});media.tabIndex=0;media.setAttribute('role','button');media.setAttribute('aria-label','Apri '+title);media.onkeydown=e=>{if(e.key==='Enter')media.click();};card.append(media);
@@ -177,6 +178,7 @@ export class PlatformUI {
    const select=btn('A\\B',()=>this.selectCompare(item),'dap-icon-button dap-ab','Scegli immagine o video per il confronto A/B');select.dataset.compare=item.id;
    tools.append(select,ib('plus','Usa come reference',()=>this.reuse(file,job.kind)),ib('prompt','Leggi e copia prompt',()=>this.showPrompt(job)),ib('download','Scarica file',()=>this.downloadImage(file)));card.append(tools);
    if(job.study)card.append(el('span','DESIGN REFERENCE','dap-study'));
+   if(file.variant){const variant=el('span',({original:'ORIGINALE',repaired:'SCATTI CORRETTI',checked:'VERIFICATO · INVARIATO'})[file.variant]||'','dap-video-variant');variant.title=job.repair?.status==='unchanged'?'Nessuno scatto rilevato: copia identica all’originale.':variant.textContent;card.append(variant);}
   }else{
    card.classList.add('pending');const logo=el('video','','dap-loading-logo');logo.src=this.bridge.loadingLogo();logo.muted=true;logo.loop=true;logo.autoplay=true;logo.playsInline=true;logo.setAttribute('aria-label','Generazione in corso');
    const track=el('div','','dap-progress-track dap-card-progress');track.append(el('i'));const error=el('div','','dap-error-content');error.append(el('span','ERRORE'),el('p',job.error||''));card.append(logo,track,error);
@@ -191,7 +193,7 @@ export class PlatformUI {
   this.updateProgress();let expired=false;
   for(const job of this.allResults())for(const card of this.cards.get(job.id)||[]){
    const p=this.jobProgress(job),bar=card.querySelector('.dap-card-progress>i');if(bar){bar.style.width=p.percent+'%';bar.parentElement.classList.toggle('indeterminate',!!p.indeterminate);bar.parentElement.title=p.label;}
-   const status=card.querySelector('.dap-job-state');if(status)status.textContent=({submitting:'Invio',queued:'In attesa',running:'Generazione API',failed:'Errore',cancelled:'Interrotta',missing:'Output assente'})[job.status]||job.status;
+   const status=card.querySelector('.dap-job-state');if(status)status.textContent=job.status==='repairing'?(job.repairStage||'Correzione scatti'):({submitting:'Invio',queued:'In attesa',running:'Generazione API',failed:'Errore',cancelled:'Interrotta',missing:'Output assente'})[job.status]||job.status;
    card.classList.toggle('stopped',terminal.has(job.status));card.classList.toggle('failed',['failed','missing'].includes(job.status));
    const elapsed=card.querySelector('.dap-elapsed'),seconds=job.started?Math.max(0,Math.floor(((job.finished||Date.now())-job.started)/1000)):null;elapsed.textContent=job.study?'LAYOUT':seconds!==null?seconds+'s'+(!terminal.has(job.status)&&p.expected?'/~'+Math.round(p.expected)+'s':''):'';
    const error=card.querySelector('.dap-error-content p');if(error)error.textContent=job.error||'';
@@ -233,6 +235,7 @@ export class PlatformUI {
  }
  jobProgress(job){
   if(terminal.has(job.status))return {percent:job.status==='completed'?100:job.stoppedProgress??Math.min(99,(job.progress||0)*100),label:job.status,remaining:0};
+  if(job.status==='repairing')return {percent:Math.min(99,90+9*(job.repairProgress||0)),label:job.repairStage||'Correzione scatti',remaining:null};
   if(Number.isFinite(job.progress)&&job.progress>0)return {percent:Math.min(99,job.progress*100),label:Math.round(job.progress*100)+'% · avanzamento Comfy',remaining:job.progress<1?Math.max(0,Math.round((Date.now()-job.started)/1000*(1-job.progress)/job.progress)):0};
   const samples=this.allResults().filter(j=>j.family===job.family&&j.status==='completed'&&j.finished>j.started&&!j.study).slice(0,8).map(j=>(j.finished-j.started)/1000);
   if(!samples.length)return {percent:15,indeterminate:true,label:'Tempo trascorso · stima disponibile dopo le prime generazioni',remaining:null};
@@ -270,10 +273,11 @@ export class PlatformUI {
   }catch(e){for(const j of jobs){if(!terminal.has(j.status)){j.stoppedProgress=this.jobProgress(j).percent;j.status='failed';j.error=e.message;j.finished=Date.now();j.errorVisibleUntil=Date.now()+5000;}}this.save();this.updateCards();this.note(e.message,true);}finally{this.busy=false;if(!this.closed)this.updateHeader();}
  }
  event(name,d){
+  if(name==='dogma_video_repair'){const job=this.state.results.find(j=>j.id===d?.job_id);if(job&&!terminal.has(job.status)){job.status='repairing';job.repairProgress=d.value;job.repairStage=d.stage;this.save();this.updateCards();}return;}
   if(!d?.prompt_id)return;const jobs=this.state.results.filter(j=>j.promptId===d.prompt_id);if(!jobs.length){this.pendingEvents ||= [];if(this.busy&&this.pendingEvents.length<200)this.pendingEvents.push([name,d]);return;}
-  if(name==='progress_state'){for(const [id,n] of Object.entries(d.nodes||{})){const j=jobs.find(x=>x.generator===String(id));if(j&&!terminal.has(j.status)){if(n.state==='running')j.status='running';if(n.max>0&&n.value>0)j.progress=n.value/n.max;}}}
-  if(name==='progress'){const j=jobs.find(x=>x.generator===String(d.node));if(j&&d.max>0){j.progress=d.value/d.max;j.status='running';}}
-  if(name==='executing'&&d.node){const j=jobs.find(x=>x.generator===String(d.node));if(j)j.status='running';}
+  if(name==='progress_state'){for(const [id,n] of Object.entries(d.nodes||{})){const j=jobs.find(x=>x.generator===String(id));if(j&&!terminal.has(j.status)&&j.status!=='repairing'){if(n.state==='running')j.status='running';if(n.max>0&&n.value>0)j.progress=n.value/n.max;}}}
+  if(name==='progress'){const j=jobs.find(x=>x.generator===String(d.node));if(j&&d.max>0&&!terminal.has(j.status)&&j.status!=='repairing'){j.progress=d.value/d.max;j.status='running';}}
+  if(name==='executing'&&d.node){const j=jobs.find(x=>x.generator===String(d.node));if(j&&!terminal.has(j.status)&&j.status!=='repairing')j.status='running';}
   if(name==='executed'){
    const job=jobs.find(x=>x.output===String(d.node));if(job&&d.output?.images){const record=d.output.dogma_records?.[0];Object.assign(job,record||{images:d.output.images,status:'completed',finished:Date.now()});this.renderFilters();this.renderGallery();}
   }

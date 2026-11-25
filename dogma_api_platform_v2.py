@@ -103,7 +103,7 @@ def _import_workspace(root):
                     candidate=(path.parent.parent/relative/name).resolve()
                 else:candidate=(path.parent/name).resolve()
                 if not candidate.is_relative_to(root) or not candidate.is_file():continue
-                files.append({'filename':name,'workspace':str(root),'relative':candidate.relative_to(root).as_posix(),'type':'workspace'})
+                files.append({'filename':name,'workspace':str(root),'relative':candidate.relative_to(root).as_posix(),'type':'workspace',**({'variant':original['variant']} if original.get('variant') else {})})
                 exported.append(str(candidate))
             if not files:continue
             data.update(workspace=str(root),images=files,exported=exported,status='completed',imported=True)
@@ -260,17 +260,65 @@ class DOGMAAPIVideoOutputV2:
     FUNCTION='save'
     CATEGORY='DOGMA/API Platform'
 
-    def save(self,video,metadata,prompt=None,extra_pnginfo=None):
+    async def save(self,video,metadata,prompt=None,extra_pnginfo=None):
+        cancelled=threading.Event()
+        worker=asyncio.create_task(asyncio.to_thread(self._save,video,metadata,prompt,extra_pnginfo,cancelled))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancelled.set()
+            # Let the worker retain the generated original and remove its partial fix.
+            try:await worker
+            except Exception:pass
+            raise
+
+    def _save(self,video,metadata,prompt=None,extra_pnginfo=None,cancelled=None):
         from comfy_api.latest import Types
         import folder_paths
         from comfy.cli_args import args
         data=json.loads(metadata);width,height=video.get_dimensions()
-        folder,filename,counter,subfolder,_=folder_paths.get_save_image_path(_save_prefix(data),str(_output()),width,height)
-        filename=f'{filename}_{counter:05}_.mp4'
+        with _LOCK:
+            folder,stem,counter,subfolder,_=folder_paths.get_save_image_path(_save_prefix(data),str(_output()),width,height)
+            while True:
+                filename=f'{stem}_{counter:05}_.mp4';source=Path(folder)/filename
+                try:
+                    # Reserve before releasing the lock; async branches must never overwrite.
+                    with source.open('xb'):pass
+                    break
+                except FileExistsError:counter+=1
         saved_metadata=None if args.disable_metadata else {**(extra_pnginfo or {}),'prompt':prompt}
-        video.save_to(str(Path(folder)/filename),format=Types.VideoContainer('mp4'),codec=Types.VideoCodec('auto'),metadata=saved_metadata)
+        try:
+            video.save_to(str(source),format=Types.VideoContainer('mp4'),codec=Types.VideoCodec('auto'),metadata=saved_metadata)
+        except BaseException:
+            source.unlink(missing_ok=True)
+            raise
         files=[{'filename':filename,'subfolder':subfolder,'type':'output','format':'video/mp4'}]
-        record=_record(metadata,files,'video')
+        if data.get('videoRepair'):
+            files[0]['variant']='original'
+            try:
+                from .dogma_video_repair import repair_video
+                import comfy.model_management as management
+                from server import PromptServer
+                def progress(stage, fraction):
+                    # The job ID is stable before/after the batch receives its prompt ID.
+                    PromptServer.instance.send_sync('dogma_video_repair',{'job_id':data['id'],'stage':stage,'value':fraction})
+                def check_cancel():
+                    from .dogma_video_repair import RepairCancelled
+                    if cancelled is not None and cancelled.is_set():raise RepairCancelled('Correzione interrotta.')
+                    management.throw_exception_if_processing_interrupted()
+                fixed=source.with_name(source.stem+'_FIX.mp4')
+                report=repair_video(source,fixed,Path(folder_paths.models_dir)/'DOGMA'/'rife',
+                                    cancel=check_cancel,progress=progress)
+                data['repair']=report
+                files.append({'filename':fixed.name,'subfolder':subfolder,'type':'output','format':'video/mp4',
+                              'variant':'repaired' if report['status']=='repaired' else 'checked'})
+                if report['status']=='skipped_quality':
+                    data['warning']='Fix non applicato: il controllo del movimento non ha confermato un miglioramento. La seconda copia conserva l’originale.'
+            except Exception as exc:
+                # Never repeat a paid generation when only local post-processing fails.
+                data['repair']={'status':'failed','error':str(exc)}
+                data['warning']='Originale salvato. Correzione scatti non completata: '+(str(exc) or 'interrotta')
+        record=_record(json.dumps(data,ensure_ascii=False),files,'video')
         return {'ui':{'images':files,'animated':(True,),'dogma_records':[record]},'result':()}
 
 

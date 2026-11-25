@@ -1,18 +1,18 @@
 import { app } from '../../scripts/app.js';
 import { api } from '../../scripts/api.js';
-import { PlatformUI } from './dogma_api_ui.js?v=1.0.56';
-import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.56';
+import { PlatformUI } from './dogma_api_ui.js?v=1.0.57';
+import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.57';
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.56',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.57',ROOT);document.head.append(css);
 let opened=null,queueLock=false;
-const cachedSchemas=fetch(new URL('dogma_api_schemas.json?v=1.0.56',ROOT)).then(r=>r.json()).catch(()=>({}));
+const cachedSchemas=fetch(new URL('dogma_api_schemas.json?v=1.0.57',ROOT)).then(r=>r.json()).catch(()=>({}));
 
 class ComfyBridge {
  constructor(node){this.node=node;this.preview=false;this.pricingNodes=new Map();}
  get widget(){return this.node.widgets.find(w=>w.name==='config');}
- load(){const s=JSON.parse(this.widget.value||'{}');if(!s.models)throw new Error('Apri DOGMA_API_PLATFORM_V4.json.');return migrateState(s);}
+ load(){const s=JSON.parse(this.widget.value||'{}');if(!s.models)throw new Error('Apri DOGMA_API_PLATFORM_V5.json.');return migrateState(s);}
  async initialize(state){
-  const [defaults,catalog,cached]=await Promise.all([(await fetch(new URL('dogma_api_defaults.json?v=1.0.56',ROOT))).json(),this.request('/catalog'),cachedSchemas]);
+  const [defaults,catalog,cached]=await Promise.all([(await fetch(new URL('dogma_api_defaults.json?v=1.0.57',ROOT))).json(),this.request('/catalog'),cachedSchemas]);
   for(const [key,value] of Object.entries(defaults.models))state.models[key] ||= copy(value);
   this.catalog=catalog;this.defs=cached;
   const live=await Promise.allSettled(Object.keys(cached).map(async type=>{const r=await api.fetchApi('/object_info/'+encodeURIComponent(type));if(!r.ok)throw new Error(type);const d=await r.json();return [type,d[type]];}));
@@ -78,7 +78,7 @@ class ComfyBridge {
   try{await app.queuePrompt(0,1);if(!result?.prompt_id)throw new Error('Comfy non ha accettato il batch. Controlla accesso e messaggi di Comfy.');return result.prompt_id;}
   finally{if(app.graphToPrompt===build)app.graphToPrompt=nativeBuild;if(api.queuePrompt===capture)api.queuePrompt=nativeQueue;queueLock=false;}
  }
- subscribe(handler){const controller=new AbortController();for(const name of ['execution_start','executing','executed','execution_success','execution_error','execution_interrupted','progress','progress_state'])api.addEventListener(name,e=>{let d=e.detail;if(name==='execution_start')this.activePrompt=d.prompt_id;if(name==='executing'&&(typeof d==='string'||d===null))d={node:d,prompt_id:this.activePrompt};handler(name,d);},{signal:controller.signal});return ()=>controller.abort();}
+ subscribe(handler){const controller=new AbortController();for(const name of ['execution_start','executing','executed','execution_success','execution_error','execution_interrupted','progress','progress_state','dogma_video_repair'])api.addEventListener(name,e=>{let d=e.detail;if(name==='execution_start')this.activePrompt=d.prompt_id;if(name==='executing'&&(typeof d==='string'||d===null))d={node:d,prompt_id:this.activePrompt};handler(name,d);},{signal:controller.signal});return ()=>controller.abort();}
  async history(){const r=await api.fetchApi('/history?max_items=200');if(!r.ok)throw new Error('Cronologia non disponibile.');return r.json();}
  async cancel(id){const r=await api.fetchApi('/jobs/'+encodeURIComponent(id)+'/cancel',{method:'POST'});if(r.ok)return r.json();if(r.status!==404)throw new Error('Interruzione non riuscita.');await api.fetchApi('/queue',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({delete:[id]})});const stopped=await api.fetchApi('/interrupt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prompt_id:id})});if(!stopped.ok)throw new Error('Interruzione non riuscita.');}
  download(state){this.save(state);const url=URL.createObjectURL(new Blob([JSON.stringify(app.graph.serialize(),null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='DOGMA_API_PLATFORM_SESSION.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}

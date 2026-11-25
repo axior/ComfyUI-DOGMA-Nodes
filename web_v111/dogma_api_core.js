@@ -47,7 +47,7 @@ export function migrateState(raw){
  s.dateMode ||= raw.schema===1?'manual':'today';if(s.dateMode==='today')s.date=todayCode();
  s.workspace ||= '';s.library ||= [];s.results ||= [];s.references ||= [];s.filters ||= {models:[],project:'*',scene:'*',kind:'all',workspace:'*'};s.density ??= 45;s.workExpanded ??= false;
  for(const m of Object.values(s.models||{})){m.parameters ||= m.variants?.[0]||{};delete m.variants;delete m.editVariant;delete m.seedMode;}
- s.filters.hideErrors ??= false;
+ s.filters.hideErrors ??= false;s.videoRepair ??= false;
  for(const [i,r] of s.references.entries()){r.kind ||= 'image';r.role ||= 'reference';const legacyMask=raw.schema===1&&i===0&&!!raw.maskEnabled;r.process ||= {enabled:legacyMask,mask:legacyMask,maskMode:'edit',invert:false,flip:false,crop:false,resizeMpx:false,megapixels:1,expand:0,blur:0,fillHoles:false,targetWidth:0,targetHeight:0,source:'paint',prompt:'',segment:0,background:'#ff00ff'};}
  if(raw.schema<3)for(const r of [...s.references])if(r.kind==='image'&&r.modes?.includes('video')&&['first','last'].includes(r.role))s.references.push({...copy(r),role:'reference'});
  for(const r of s.results)r.kind ||= 'image';
@@ -114,7 +114,7 @@ export function compileBatch(s,jobs,baseSeed){
   }else if(f.key==='nano'){if(nanoBatch)inputs.images=nanoBatch;}
   else{if(f.key==='gpt')inputs.n=1;images.forEach((x,j)=>inputs[`${f.key==='flux'?'':'model.'}images.image_${j+1}`]=x.link);}
   const gen=String(10000+i*10),save=String(10001+i*10);
-  Object.assign(job,{seed,generator:gen,output:save,project:s.project||'',scene:s.scene||'',workspace:s.workspace||'',filename:titleParts(s).join('_'),imageEdit:s.mode==='image'&&s.imageEdit,baseReference:s.mode==='image'&&s.imageEdit&&images.length?copy(images[0].ref):null,prompt,parameters:copy(inputs)});
+  Object.assign(job,{seed,generator:gen,output:save,videoRepair:s.mode==='video'&&!!s.videoRepair,project:s.project||'',scene:s.scene||'',workspace:s.workspace||'',filename:titleParts(s).join('_'),imageEdit:s.mode==='image'&&s.imageEdit,baseReference:s.mode==='image'&&s.imageEdit&&images.length?copy(images[0].ref):null,prompt,parameters:copy(inputs)});
   if(job.baseReference)delete job.baseReference.editorDraft;
   output[gen]={class_type:type,inputs,_meta:{title:`${f.name} ${job.index+1}`}};
   const metadata={...copy(job),session:s.session,prefix:prefix(s,f),date:s.dateMode==='today'?todayCode():s.date,appendDate:s.appendDate};delete metadata.images;delete metadata.parameters;

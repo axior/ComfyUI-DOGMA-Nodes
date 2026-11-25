@@ -1,5 +1,5 @@
-import {copy} from './dogma_api_core.js?v=1.0.56';
-import {openViewer,copyFullImage} from './dogma_api_viewer.js?v=1.0.56';
+import {copy} from './dogma_api_core.js?v=1.0.57';
+import {openViewer,copyFullImage} from './dogma_api_viewer.js?v=1.0.57';
 
 export async function referenceEditor(ui,ref){
  const make=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};

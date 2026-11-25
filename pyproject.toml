@@ -1,9 +1,9 @@
 [project]
 name = "comfyui-dogma-nodes"
 description = "Custom ComfyUI nodes for DOGMA AI video workflows."
-version = "1.0.56"
+version = "1.0.57"
 license = { file = "LICENSE" }
-dependencies = ["scipy>=1.10"]
+dependencies = ["scipy>=1.10", "av>=18.0", "opencv-python>=4.8"]
 
 [project.urls]
 Repository = "https://github.com/axior/ComfyUI-DOGMA-Nodes"

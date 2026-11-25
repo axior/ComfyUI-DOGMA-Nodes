@@ -12,6 +12,7 @@ export function icon(name){
   grid:[['path',{d:'M2 4h5v6H2zM10 4h5v6h-5zM18 4h5v6h-5zM2 14h5v6H2zM10 14h5v6h-5zM18 14h5v6h-5z'}]],
   compare:[['path',{d:'M1 6a1 1 0 0 1 1-1h20a1 1 0 0 1 1 1v11a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1Z M1.5 6v11a.5.5 0 0 0 .5.5h9V5.5H2a.5.5 0 0 0-.5.5Z M13.2 6.3v10.4h4.1c4 0 4.8-4.5 1.6-5.3 2.5-1.1 1.8-5.1-1.6-5.1Z M14.6 7.6h2.6c2.4 0 2.4 3.1 0 3.1h-2.6Z M14.6 12h2.8c2.7 0 2.7 3.4 0 3.4h-2.8Z M2.6 16.7 6.3 6.3h1.5l3.7 10.4H10l-1-3H5l-1 3Z M5.5 12.4h3L7 8Z',fill:'currentColor',stroke:'none','fill-rule':'evenodd'}]],
   play:[['path',{d:'M7 3l15 9L7 21z',fill:'currentColor',stroke:'none'}]],
+  playCircle:[['circle',{cx:12,cy:12,r:10.5,fill:'none','stroke-width':.9}],['path',{d:'M9 7l8.5 5L9 17z',fill:'currentColor',stroke:'none'}]],
   plus:[['path',{d:'M12 4v16M4 12h16'}]],
   close:[['path',{d:'m6 6 12 12M18 6 6 18'}]],
   folder:[['path',{d:'M2 6h8l2 3h10l-2 11H3zM2 6V4h8l2 2h8v3'}]],
