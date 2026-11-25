@@ -1,5 +1,6 @@
 {
-  "schema": 3,
+  "schema": 4,
+  "runCount": 1,
   "session": "",
   "mode": "image",
   "imageEdit": true,

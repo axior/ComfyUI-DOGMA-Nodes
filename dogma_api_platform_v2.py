@@ -113,6 +113,53 @@ def _import_workspace(root):
     return records
 
 
+_SAM_LOCK = threading.Lock()
+
+
+def prompt_mask(source, image, settings):
+    """Compute the installed SAM3 node once and retain the exact mask for Run."""
+    import inspect
+    import numpy as np
+    import torch
+    import nodes
+    import folder_paths
+    from PIL import Image
+    prompt = str(settings.get('prompt', '')).strip()
+    if not prompt:raise ValueError('Scrivi cosa selezionare in MASK PROMPT.')
+    node_class = nodes.NODE_CLASS_MAPPINGS.get('SAM3Segment')
+    if node_class is None:raise ValueError('SAM3 non è disponibile. Installa o abilita il nodo SAM3Segment di ComfyUI-RMBG e riavvia Comfy.')
+    stat = source.stat()
+    signature = json.dumps([str(source),stat.st_mtime_ns,stat.st_size,prompt,int(settings.get('segment') or 0),node_class.__module__],ensure_ascii=False)
+    digest = hashlib.sha256(signature.encode()).hexdigest()
+    directory = Path(folder_paths.get_input_directory())/'DOGMA_API'/'masks'
+    directory.mkdir(parents=True,exist_ok=True)
+    path = directory/('sam3_'+digest+'.png')
+    with _SAM_LOCK:
+        if not path.is_file():
+            instance = node_class()
+            function = getattr(instance,node_class.FUNCTION)
+            specs = node_class.INPUT_TYPES()
+            values = {}
+            for name,spec in {**specs.get('required',{}),**specs.get('optional',{})}.items():
+                options=spec[1] if len(spec)>1 and isinstance(spec[1],dict) else {}
+                if 'default' in options:values[name]=options['default']
+                elif isinstance(spec[0],list) and spec[0]:values[name]=spec[0][0]
+            values.update(image=torch.from_numpy(np.asarray(image.convert('RGB')).copy()).float().unsqueeze(0)/255,prompt=prompt,output_mode='Merged',confidence_threshold=.5,max_segments=0,segment_pick=int(settings.get('segment') or 0),mask_blur=0,mask_offset=0,device='Auto',invert_output=False,unload_model=True,background='Alpha',background_color='#222222')
+            parameters=inspect.signature(function).parameters
+            values={key:value for key,value in values.items() if key in parameters}
+            with torch.inference_mode():result=function(**values)
+            if isinstance(result,dict):result=result.get('result',())
+            if not result or len(result)<2:raise ValueError('SAM3 non ha restituito una maschera.')
+            masks=result[1].detach().cpu()
+            if masks.numel()==0:mask=Image.new('L',image.size,0)
+            else:
+                if masks.ndim==3:masks=masks.amax(dim=0)
+                mask=Image.fromarray((masks.numpy().clip(0,1)*255).astype(np.uint8)).resize(image.size,Image.Resampling.NEAREST)
+            temporary=path.with_suffix('.tmp')
+            mask.save(temporary,format='PNG');temporary.replace(path)
+    return Image.open(path).convert('L'), 'DOGMA_API/masks/'+path.name
+
+
 def process_reference(image, mask, settings):
     """Shared Pillow operation used by the node and by the no-generation preview."""
     import numpy as np
@@ -150,7 +197,7 @@ def process_reference(image, mask, settings):
         if not crop_box or crop_box[2]<=crop_box[0] or crop_box[3]<=crop_box[1]:
             raise ValueError('Crop vuoto: seleziona un’area o dipingi una maschera.')
     if cfg.get('mask'):
-        background = Image.new('RGB', image.size, ImageColor.getrgb(cfg.get('background') or '#00ff00'))
+        background = Image.new('RGB', image.size, ImageColor.getrgb(cfg.get('background') or '#ff00ff'))
         image = Image.composite(background,image,mask) if cfg.get('maskMode')=='edit' else Image.composite(image,background,mask)
     if crop_box:image=image.crop(crop_box);mask=mask.crop(crop_box)
     width,height = int(cfg.get('targetWidth') or 0),int(cfg.get('targetHeight') or 0)
@@ -256,7 +303,7 @@ def register_routes():
     @routes.get('/dogma/api/v2/catalog')
     async def catalog(request):
         capabilities=access.catalog(request,_output())
-        return web.json_response({'access':{**capabilities,'output_root':str(_output()/'DOGMA'/'API')},'frontend':frontend_modules(PromptServer.instance.web_root),'version':'1.0.55'})
+        return web.json_response({'access':{**capabilities,'output_root':str(_output()/'DOGMA'/'API')},'frontend':frontend_modules(PromptServer.instance.web_root),'version':'1.0.56'})
 
     @routes.post('/dogma/api/v2/workspace')
     async def workspace(request):
@@ -348,6 +395,19 @@ def register_routes():
             return web.json_response({'path':str(file.parent),'filename':file.name})
         except (ValueError,OSError,IndexError,KeyError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
+    @routes.post('/dogma/api/v2/explorer')
+    async def explorer(request):
+        access.browser(request)
+        if not access.is_local(request) or os.name!='nt':
+            raise web.HTTPBadRequest(text='Esplora file è disponibile sul computer Windows che esegue Comfy. Usa il browser cartelle su un server remoto.')
+        data=await request.json()
+        try:
+            path=access.output_path(request,data.get('path'),_output())
+            if not path.is_dir():raise ValueError('Cartella inesistente.')
+            os.startfile(str(path))
+            return web.json_response({'opened':True})
+        except (ValueError,OSError) as exc:raise web.HTTPBadRequest(text=str(exc))
+
     @routes.post('/dogma/api/v2/reference-preview')
     async def preview(request):
         access.browser(request);data=await request.json()
@@ -357,17 +417,21 @@ def register_routes():
             if not source.is_relative_to(Path(folder_paths.get_input_directory()).resolve()):raise ValueError('Reference esterna a input.')
             rgba=ImageOps.exif_transpose(Image.open(source)).convert('RGBA');mask=ImageOps.invert(rgba.getchannel('A'))
             settings=data['settings']
-            if settings.get('source')=='prompt' and settings.get('mask'):raise ValueError('La maschera da testo viene calcolata da SAM3 durante Run. Per l’anteprima usa una maschera dipinta.')
-            if settings.get('maskFile'):
+            sam_file=None
+            if settings.get('source')=='prompt' and settings.get('mask'):
+                mask,sam_file=prompt_mask(source,rgba,settings)
+            elif settings.get('maskFile'):
                 mask_path=Path(folder_paths.get_annotated_filepath(settings['maskFile'])).resolve()
                 if not mask_path.is_relative_to(Path(folder_paths.get_input_directory()).resolve()):raise ValueError('Maschera esterna a input.')
                 mask=Image.open(mask_path).convert('L')
             result,_=process_reference(rgba,mask,settings)
             directory=Path(folder_paths.get_input_directory())/'DOGMA_API'/'previews';directory.mkdir(parents=True,exist_ok=True)
             filename='ref_'+uuid.uuid4().hex+'.png';result.save(directory/filename)
-            return {'file':'DOGMA_API/previews/'+filename,'width':result.width,'height':result.height}
+            response={'file':'DOGMA_API/previews/'+filename,'width':result.width,'height':result.height}
+            if sam_file:response.update(maskFile=sam_file,samSource=data['file'],samPrompt=settings['prompt'],samSegment=int(settings.get('segment') or 0),emptyMask=not bool(mask.getbbox()))
+            return response
         try:return web.json_response(await asyncio.to_thread(prepare))
-        except (ValueError,OSError,KeyError) as exc:raise web.HTTPBadRequest(text=str(exc))
+        except (ValueError,OSError,KeyError,RuntimeError,ImportError) as exc:raise web.HTTPBadRequest(text=str(exc))
 
 
 NODE_CLASS_MAPPINGS={'DOGMAAPIReferenceV2':DOGMAAPIReferenceV2,'DOGMAAPIImageOutputV2':DOGMAAPIImageOutputV2,'DOGMAAPIVideoOutputV2':DOGMAAPIVideoOutputV2}

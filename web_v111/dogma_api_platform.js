@@ -1,18 +1,18 @@
 import { app } from '../../scripts/app.js';
 import { api } from '../../scripts/api.js';
-import { PlatformUI } from './dogma_api_ui.js?v=1.0.55';
-import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.55';
+import { PlatformUI } from './dogma_api_ui.js?v=1.0.56';
+import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.56';
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.55',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.56',ROOT);document.head.append(css);
 let opened=null,queueLock=false;
-const cachedSchemas=fetch(new URL('dogma_api_schemas.json?v=1.0.55',ROOT)).then(r=>r.json()).catch(()=>({}));
+const cachedSchemas=fetch(new URL('dogma_api_schemas.json?v=1.0.56',ROOT)).then(r=>r.json()).catch(()=>({}));
 
 class ComfyBridge {
  constructor(node){this.node=node;this.preview=false;this.pricingNodes=new Map();}
  get widget(){return this.node.widgets.find(w=>w.name==='config');}
- load(){const s=JSON.parse(this.widget.value||'{}');if(!s.models)throw new Error('Apri DOGMA_API_PLATFORM_V3.json.');return migrateState(s);}
+ load(){const s=JSON.parse(this.widget.value||'{}');if(!s.models)throw new Error('Apri DOGMA_API_PLATFORM_V4.json.');return migrateState(s);}
  async initialize(state){
-  const [defaults,catalog,cached]=await Promise.all([(await fetch(new URL('dogma_api_defaults.json?v=1.0.55',ROOT))).json(),this.request('/catalog'),cachedSchemas]);
+  const [defaults,catalog,cached]=await Promise.all([(await fetch(new URL('dogma_api_defaults.json?v=1.0.56',ROOT))).json(),this.request('/catalog'),cachedSchemas]);
   for(const [key,value] of Object.entries(defaults.models))state.models[key] ||= copy(value);
   this.catalog=catalog;this.defs=cached;
   const live=await Promise.allSettled(Object.keys(cached).map(async type=>{const r=await api.fetchApi('/object_info/'+encodeURIComponent(type));if(!r.ok)throw new Error(type);const d=await r.json();return [type,d[type]];}));
@@ -29,6 +29,8 @@ class ComfyBridge {
   }catch(e){console.warn('DOGMA: servizi crediti/prezzi non disponibili in questo frontend.');}
  }
  save(s){this.widget.value=JSON.stringify(s);this.node.setDirtyCanvas?.(true,true);clearTimeout(this.saveTimer);this.saveTimer=setTimeout(()=>{if(this.node.graph===app.graph)app.graph.change?.();},250);}
+ loadingLogo(){return new URL('./dogma_api_assets/dogma-loading.mp4',ROOT).href;}
+ explorer(path){return this.request('/explorer',{path});}
  logo(){return new URL('dogma_api_logo.png',ROOT).href;}
  view(file){if(file?.workspace&&file?.relative)return api.apiURL('/dogma/api/v2/workspace-media?'+new URLSearchParams({workspace:file.workspace,relative:file.relative}));if(file?.url)return file.url;return api.apiURL('/view?'+new URLSearchParams(viewParameters(file)));}
  async request(path,body){const headers={};if(this.catalog?.access?.token)headers['X-Dogma-Access']=this.catalog.access.token;if(body!==undefined)headers['Content-Type']='application/json';const response=await api.fetchApi('/dogma/api/v2'+path,{method:body===undefined?'GET':'POST',headers,...(body!==undefined?{body:JSON.stringify(body)}:{})});if(!response.ok)throw new Error((await response.text()).slice(0,800));return response.json();}

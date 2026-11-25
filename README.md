@@ -200,3 +200,7 @@ Existing DOGMA and H3 workflows keep their identifiers.
 
 ## API Platform V3 / 1.0.55
 Open DOGMA_API_PLATFORM_V3.json: one launcher node. The panel appears before asynchronous initialization. Folder navigation stays in the browser. Stop cancels DOGMA jobs; provider billing for already completed work still applies. Remaining time is an estimate from completed jobs when available.
+
+
+## API Platform V4 / 1.0.56
+Open DOGMA_API_PLATFORM_V4.json: one launcher node. The panel appears before asynchronous initialization. Folder navigation stays in the browser. Stop cancels DOGMA jobs; provider billing for already completed work still applies. Remaining time is an estimate from completed jobs when available.
