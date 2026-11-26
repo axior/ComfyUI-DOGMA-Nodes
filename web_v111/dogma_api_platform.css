@@ -187,3 +187,9 @@
 .dap-video-repair{display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin:-12px 0 24px;color:#aaa;font:13px Arial,sans-serif;cursor:pointer}
 .dap-video-repair small{flex-basis:100%;margin-left:42px;color:#666;font:10px/1.6 Arial,sans-serif}
 .dap-video-variant{position:absolute;top:12px;left:12px;padding:4px 7px;border-radius:4px;background:#000a;color:#ccc;font:10px Arial,sans-serif;pointer-events:none}
+
+/* Match the left edge of Image/Video; keep the existing right edge. */
+.dap-controls{padding-left:0}
+.dap-edit-mode{padding-left:0}
+.dap-viewer-tools>.dap-compare-toggle{margin-left:auto;font:11px Arial,Helvetica,sans-serif}
+.dap-compare-toggle:has(input:disabled){cursor:default;color:#666}

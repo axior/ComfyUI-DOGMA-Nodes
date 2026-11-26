@@ -1,6 +1,6 @@
-import {ALL_FAMILIES,copy,families,plannedJobs,compileBatch,validateState,titleParts,todayCode,filterResults,migrateState,activeReferences,visibleReferences,choicesFor,sortedChoices,safeName,orderResults,savedFilename,preparedMask} from './dogma_api_core.js?v=1.0.57';
+import {ALL_FAMILIES,copy,families,plannedJobs,compileBatch,validateState,titleParts,todayCode,filterResults,migrateState,activeReferences,visibleReferences,choicesFor,sortedChoices,safeName,orderResults,savedFilename,preparedMask} from './dogma_api_core.js?v=1.0.60';
 import {icon} from './dogma_api_icons.js?v=1.0.57';
-import {hoverCompare,openViewer} from './dogma_api_viewer.js?v=1.0.57';
+import {hoverCompare,openViewer} from './dogma_api_viewer.js?v=1.0.60';
 import {referenceEditor} from './dogma_api_reference_editor.js?v=1.0.57';
 
 export const el=(tag,text='',cls='')=>{const e=document.createElement(tag);e.textContent=text;e.className=cls;return e;};
@@ -156,7 +156,7 @@ export class PlatformUI {
   const scenes=[...new Set(all.filter(r=>s.filters.project==='*'||(r.project||'')===s.filters.project).map(r=>r.scene||''))].sort();select('Scena',s.filters.scene,[['*','Tutte le scene'],...scenes.map(v=>[v,v||'Senza scena'])],v=>s.filters.scene=v);
   select('Output',s.filters.kind,[['all','Immagini e video'],['image','Immagini'],['video','Video']],v=>s.filters.kind=v);
   const ws=[...new Set(all.map(r=>r.workspace||''))];if(ws.length>1)select('Cartella',s.filters.workspace,[['*','Tutte le cartelle'],...ws.map(v=>[v,v.split(/[\\/]/).filter(Boolean).at(-1)||'Comfy output'])],v=>s.filters.workspace=v);
-  const errors=el('label','','dap-error-filter');errors.append(this.toggle('Mostra o nascondi generazioni fallite',!s.filters.hideErrors,checked=>{s.filters.hideErrors=!checked;this.save();this.renderGallery();},'span'),el('span','Mostra errori'));this.filters.append(errors,ib('refresh','Aggiorna libreria',()=>this.refreshLibrary()));
+  const errors=el('label','','dap-error-filter');errors.append(this.toggle('Mostra o nascondi generazioni fallite',!s.filters.hideErrors,checked=>{s.filters.hideErrors=!checked;this.save();this.renderGallery();},'span'),el('span','Mostra errori'));this.filters.append(errors,this.compareToggle(),ib('refresh','Aggiorna libreria',()=>this.refreshLibrary()));
  }
  renderGallery(){
   const scroll=this.galleryViewport?.scrollTop||0,version=this.galleryVersion=(this.galleryVersion||0)+1;this.gallery.replaceChildren();this.cards.clear();const list=filterResults(this.allResults(),this.state.filters);
@@ -172,7 +172,7 @@ export class PlatformUI {
     const video=el('video');video.src=this.bridge.view(file);video.muted=true;video.preload='metadata';video.loop=true;video.playsInline=true;media.append(video);
     const duration=el('span','','dap-video-duration');video.onloadedmetadata=()=>{duration.textContent=Number.isFinite(video.duration)?`${Math.floor(video.duration/60)}:${String(Math.floor(video.duration%60)).padStart(2,'0')}`:'';};media.append(icon('playCircle'),duration);
     media.onpointerenter=()=>{video.play().then(()=>media.classList.add('playing')).catch(()=>{});};media.onpointerleave=()=>{video.pause();media.classList.remove('playing');};
-   }else{const base=job.imageEdit&&job.baseReference?(job.baseReference.comparePreview||this.bridge.view(job.baseReference.processedPreview||job.baseReference.file)):null;const comparison=hoverCompare(media,this.bridge.view(file),base);comparison.image.loading='lazy';comparison.image.decoding='async';comparison.image.alt=title;}
+   }else{const base=job.imageEdit&&job.baseReference?(job.baseReference.comparePreview||this.bridge.view(job.baseReference.processedPreview||job.baseReference.file)):null;const comparison=hoverCompare(media,this.bridge.view(file),base,()=>this.state.compareEnabled!==false);comparison.image.loading='lazy';comparison.image.decoding='async';comparison.image.alt=title;}
    media.onclick=()=>openViewer(this,{job,file,index});media.tabIndex=0;media.setAttribute('role','button');media.setAttribute('aria-label','Apri '+title);media.onkeydown=e=>{if(e.key==='Enter')media.click();};card.append(media);
    const tools=el('div','','dap-card-tools'),item={id:job.id+':'+index,job,file,index};
    const select=btn('A\\B',()=>this.selectCompare(item),'dap-icon-button dap-ab','Scegli immagine o video per il confronto A/B');select.dataset.compare=item.id;
@@ -216,7 +216,18 @@ export class PlatformUI {
   let down=false;dialog.addEventListener('pointerdown',e=>down=e.target===dialog);dialog.addEventListener('click',e=>{if(down&&e.target===dialog)dialog.close();down=false;});
   dialog.addEventListener('cancel',e=>e.stopPropagation());dialog.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();dialog.close();}});dialog.addEventListener('close',()=>{dialog.remove();this.modals=this.modals.filter(d=>d!==dialog);this.modal=this.modals.at(-1)||null;});this.modals.push(dialog);dialog.tabIndex=-1;dialog.showModal();dialog.focus({preventScroll:true});return dialog;
  }
- compare(){if(this.selection.length===2)openViewer(this,this.selection[0],this.selection[1]);}
+ compareToggle(available=true){
+  const label=el('label','','dap-error-filter dap-compare-toggle'),control=this.toggle('Compare',available&&this.state.compareEnabled!==false,v=>this.setCompareEnabled(v),'span');
+  const input=control.querySelector('input');input.dataset.compareToggle='';input.disabled=!available;
+  label.title=available?'Attiva o disattiva il confronto al passaggio del mouse':'Nessuna immagine di confronto disponibile';
+  label.append(control,el('span','Compare'));return label;
+ }
+ setCompareEnabled(enabled){
+  this.state.compareEnabled=!!enabled;this.save();
+  for(const input of this.root?.querySelectorAll('[data-compare-toggle]')||[])input.checked=!!enabled&&!input.disabled;
+  if(!enabled)for(const host of this.root?.querySelectorAll('.dap-compare-host.comparing')||[])host.classList.remove('comparing');
+ }
+ compare(){if(this.selection.length===2){this.setCompareEnabled(true);openViewer(this,this.selection[0],this.selection[1]);}}
  async openOutput(job,index){try{const target=await this.bridge.openOutput(job.id,index);await this.folderBrowser(false,target.path,target.filename);}catch(e){this.note(e.message,true);if(this.modal)this.modal.append(el('p',e.message,'dap-operation-note'));}}
  async downloadImage(file){try{const r=await fetch(this.bridge.view(file));if(!r.ok)throw new Error('File non disponibile.');const url=URL.createObjectURL(await r.blob());this.urls.add(url);const a=el('a');a.href=url;a.download=file.filename||'DOGMA_output';a.click();}catch(e){this.note(e.message,true);}}
  async reuse(file,kind){try{const r=await fetch(this.bridge.view(file));if(!r.ok)throw new Error('File non disponibile.');const blob=await r.blob();await this.addReferences([new File([blob],file.filename||'DOGMA_reference.png',{type:blob.type|| (kind==='video'?'video/mp4':'image/png')})]);}catch(e){this.note(e.message,true);}}

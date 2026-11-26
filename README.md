@@ -231,3 +231,10 @@ Fix the shared repair encoder used by API Platform's **Correggi scatti** switch 
 Both the NVIDIA and software encoder now use the source video's time base for the MP4 movie and video track clocks. The strict checks on frame count, timestamps, duration, fps, dimensions, color depth and copied audio remain in place. This changes only the container timing; motion analysis, interpolation, quality gates and correction settings are unchanged. It adds no interpolation or encoding pass.
 
 When enabled, API Platform saves the generated original and a second locally processed copy in the existing project/scene workspace. Turning the switch off skips repair. Stop and real processing errors retain the original and report the outcome; an unsuccessful correction is never presented as repaired. Existing workflows and node IDs are compatible, with no new dependencies and the same code on Windows and the pod.
+
+
+## Compare controls and sidebar alignment / 1.0.60
+
+API Platform now has a compact **Compare** switch next to **Mostra errori** in the gallery filters and at the right of the enlarged image toolbar. Both controls share one saved session preference. OFF removes the original/reference overlay and divider immediately; ON enables the existing pointer comparison. Existing sessions default to ON. Selecting an explicit A/B pair still opens the comparison automatically and enables Compare. The enlarged-image switch is unavailable when there is no second image to compare.
+
+The extra left inset below the Image/Video tabs is removed from the controls and Image Edit row. References, prompt, filename/workspace and model sections now align with the left edge of the tabs; their existing right edge is preserved. Works in Image and Video mode. Existing node IDs, generation behavior, video repair and workflow JSON are unchanged.

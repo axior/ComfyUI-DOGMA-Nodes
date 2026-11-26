@@ -1,5 +1,5 @@
 import { icon } from './dogma_api_icons.js?v=1.0.57';
-import {savedFilename} from './dogma_api_core.js?v=1.0.57';
+import {savedFilename} from './dogma_api_core.js?v=1.0.60';
 
 export async function copyFullImage(url){
  if(!navigator.clipboard?.write||!globalThis.ClipboardItem)throw new Error('La copia immagini richiede HTTPS o localhost. Puoi scaricare il file a piena risoluzione.');
@@ -23,14 +23,14 @@ function videoComparison(stage,first,second,bridge,dialog,hint){
  dialog.addEventListener('close',()=>{pause();for(const v of videos){v.removeAttribute('src');v.load();}},{once:true});
 }
 
-export function hoverCompare(host,generated,original){
+export function hoverCompare(host,generated,original,enabled=()=>true){
  const a=document.createElement('img');a.src=generated;a.alt='Generata';a.draggable=false;a.className='dap-generated';host.append(a);host.classList.add('dap-compare-host');
  let cover=null,line=null;
  if(original){
   cover=document.createElement('div');cover.className='dap-original-cover';const b=document.createElement('img');b.src=original;b.alt='Image 1 / originale';b.draggable=false;cover.append(b);
   line=document.createElement('div');line.className='dap-compare-line';host.append(cover,line);
-  const move=e=>{const rect=host.getBoundingClientRect();const percent=Math.max(0,Math.min(100,(e.clientX-rect.left)/rect.width*100));cover.style.clipPath=`inset(0 ${100-percent}% 0 0)`;line.style.left=percent+'%';};
-  host.addEventListener('pointerenter',()=>host.classList.add('comparing'));host.addEventListener('pointermove',move);host.addEventListener('pointerleave',()=>host.classList.remove('comparing'));
+  const move=e=>{const active=enabled();host.classList.toggle('comparing',active);if(!active)return;const rect=host.getBoundingClientRect();const percent=Math.max(0,Math.min(100,(e.clientX-rect.left)/rect.width*100));cover.style.clipPath=`inset(0 ${100-percent}% 0 0)`;line.style.left=percent+'%';};
+  host.addEventListener('pointerenter',move);host.addEventListener('pointermove',move);host.addEventListener('pointerleave',()=>host.classList.remove('comparing'));
  }
  return {image:a,cover,line};
 }
@@ -62,7 +62,8 @@ export function openViewer(ui,item,other=null){
   dialog.addEventListener('close',()=>{video.pause();video.removeAttribute('src');video.load();},{once:true});return;
  }
  const original=other?bridge.view(other.file):job.imageEdit&&job.baseReference?(job.baseReference.comparePreview||bridge.view(job.baseReference.processedPreview||job.baseReference.file)):null;
- const compare=hoverCompare(surface,bridge.view(file),original);
+ toolbar.append(ui.compareToggle(!!original));
+ const compare=hoverCompare(surface,bridge.view(file),original,()=>ui.state.compareEnabled!==false);
  compare.image.onload=()=>{width=compare.image.naturalWidth;height=compare.image.naturalHeight;surface.style.width=width+'px';surface.style.height=height+'px';fit();};
  if(compare.image.complete&&compare.image.naturalWidth)compare.image.onload();
  compare.image.onerror=()=>{hint.textContent='File non disponibile. Potrebbe essere stato spostato.';};

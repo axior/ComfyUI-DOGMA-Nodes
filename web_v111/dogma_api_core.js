@@ -47,7 +47,7 @@ export function migrateState(raw){
  s.dateMode ||= raw.schema===1?'manual':'today';if(s.dateMode==='today')s.date=todayCode();
  s.workspace ||= '';s.library ||= [];s.results ||= [];s.references ||= [];s.filters ||= {models:[],project:'*',scene:'*',kind:'all',workspace:'*'};s.density ??= 45;s.workExpanded ??= false;
  for(const m of Object.values(s.models||{})){m.parameters ||= m.variants?.[0]||{};delete m.variants;delete m.editVariant;delete m.seedMode;}
- s.filters.hideErrors ??= false;s.videoRepair ??= false;
+ s.filters.hideErrors ??= false;s.videoRepair ??= false;s.compareEnabled ??= true;
  for(const [i,r] of s.references.entries()){r.kind ||= 'image';r.role ||= 'reference';const legacyMask=raw.schema===1&&i===0&&!!raw.maskEnabled;r.process ||= {enabled:legacyMask,mask:legacyMask,maskMode:'edit',invert:false,flip:false,crop:false,resizeMpx:false,megapixels:1,expand:0,blur:0,fillHoles:false,targetWidth:0,targetHeight:0,source:'paint',prompt:'',segment:0,background:'#ff00ff'};}
  if(raw.schema<3)for(const r of [...s.references])if(r.kind==='image'&&r.modes?.includes('video')&&['first','last'].includes(r.role))s.references.push({...copy(r),role:'reference'});
  for(const r of s.results)r.kind ||= 'image';
