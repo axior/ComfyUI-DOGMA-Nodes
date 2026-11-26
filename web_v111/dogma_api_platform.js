@@ -1,9 +1,9 @@
 import { app } from '../../scripts/app.js';
 import { api } from '../../scripts/api.js';
-import { PlatformUI } from './dogma_api_ui.js?v=1.0.60';
-import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.60';
+import { PlatformUI } from './dogma_api_ui.js?v=1.0.61';
+import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.61';
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.60',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.61',ROOT);document.head.append(css);
 let opened=null,queueLock=false;
 const cachedSchemas=fetch(new URL('dogma_api_schemas.json?v=1.0.57',ROOT)).then(r=>r.json()).catch(()=>({}));
 

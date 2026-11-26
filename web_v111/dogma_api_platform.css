@@ -191,5 +191,12 @@
 /* Match the left edge of Image/Video; keep the existing right edge. */
 .dap-controls{padding-left:0}
 .dap-edit-mode{padding-left:0}
+/* Align the visible sidebar levers with the tabs and section dividers. */
+.dap-edit-mode>.dap-toggle,.dap-date-row>.dap-toggle,.dap-model-head>.dap-toggle,.dap-video-repair>.dap-toggle{justify-content:flex-start}
 .dap-viewer-tools>.dap-compare-toggle{margin-left:auto;font:11px Arial,Helvetica,sans-serif}
 .dap-compare-toggle:has(input:disabled){cursor:default;color:#666}
+
+/* The existing model heading is the drag target; no extra handle or toolbar. */
+.dap-models-sortable>.dap-model>.dap-model-head>details>summary{cursor:grab;user-select:none}
+.dap-models-sortable>.dap-model>.dap-model-head>details>summary:active{cursor:grabbing}
+.dap-model-dragging{opacity:.55}

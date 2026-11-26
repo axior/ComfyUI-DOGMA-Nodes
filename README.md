@@ -238,3 +238,12 @@ When enabled, API Platform saves the generated original and a second locally pro
 API Platform now has a compact **Compare** switch next to **Mostra errori** in the gallery filters and at the right of the enlarged image toolbar. Both controls share one saved session preference. OFF removes the original/reference overlay and divider immediately; ON enables the existing pointer comparison. Existing sessions default to ON. Selecting an explicit A/B pair still opens the comparison automatically and enables Compare. The enlarged-image switch is unavailable when there is no second image to compare.
 
 The extra left inset below the Image/Video tabs is removed from the controls and Image Edit row. References, prompt, filename/workspace and model sections now align with the left edge of the tabs; their existing right edge is preserved. Works in Image and Video mode. Existing node IDs, generation behavior, video repair and workflow JSON are unchanged.
+
+
+## Drag to reorder models / 1.0.61
+
+Drag an existing model heading up or down to change the order of the blocks under **MODELS**. The order is saved with the session/workflow, including when switching between Image and Video. No new buttons or drag handles are added. A normal click still expands or collapses the model; switches, quantities and parameters keep their usual behavior. Drag near the sidebar edge to scroll, or release outside the list / press Escape to cancel.
+
+The visible switches in model headings, Image Edit, the date row and video repair align with the left edge of the Image/Video tabs and section dividers. Their existing click targets and text positions are preserved; switches inside reference thumbnails and parameter fields keep their own inset.
+
+Generation quantities and seeds, API execution, video repair behavior and existing workflow identifiers remain unchanged. Previous workflows load with their original model order.

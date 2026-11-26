@@ -8,6 +8,10 @@ export const FAMILIES=[
 export const VIDEO_FAMILIES=[{key:'seedance',name:'Seedance',short:'V',type:'ByteDance2ReferenceNodeV2'}];
 export const ALL_FAMILIES=[...FAMILIES,...VIDEO_FAMILIES];
 export const families=s=>s.mode==='video'?VIDEO_FAMILIES:FAMILIES;
+export function orderedFamilies(s){
+ const available=families(s),order=Array.isArray(s.modelOrder)?s.modelOrder:[];
+ return [...new Set([...order,...available.map(f=>f.key)])].map(key=>available.find(f=>f.key===key)).filter(Boolean);
+}
 export const safeName=s=>String(s||'').trim().replace(/[^\p{L}\p{N}_.-]+/gu,'_').replace(/^\.+/,'').slice(0,100);
 export function inputSpec(def,values,name){
  const parts=name.split('.');let inputs=def?.input;
@@ -48,6 +52,7 @@ export function migrateState(raw){
  s.workspace ||= '';s.library ||= [];s.results ||= [];s.references ||= [];s.filters ||= {models:[],project:'*',scene:'*',kind:'all',workspace:'*'};s.density ??= 45;s.workExpanded ??= false;
  for(const m of Object.values(s.models||{})){m.parameters ||= m.variants?.[0]||{};delete m.variants;delete m.editVariant;delete m.seedMode;}
  s.filters.hideErrors ??= false;s.videoRepair ??= false;s.compareEnabled ??= true;
+ s.modelOrder=[...new Set([...(Array.isArray(s.modelOrder)?s.modelOrder:[]),...ALL_FAMILIES.map(f=>f.key)])].filter(key=>ALL_FAMILIES.some(f=>f.key===key));
  for(const [i,r] of s.references.entries()){r.kind ||= 'image';r.role ||= 'reference';const legacyMask=raw.schema===1&&i===0&&!!raw.maskEnabled;r.process ||= {enabled:legacyMask,mask:legacyMask,maskMode:'edit',invert:false,flip:false,crop:false,resizeMpx:false,megapixels:1,expand:0,blur:0,fillHoles:false,targetWidth:0,targetHeight:0,source:'paint',prompt:'',segment:0,background:'#ff00ff'};}
  if(raw.schema<3)for(const r of [...s.references])if(r.kind==='image'&&r.modes?.includes('video')&&['first','last'].includes(r.role))s.references.push({...copy(r),role:'reference'});
  for(const r of s.results)r.kind ||= 'image';
