@@ -222,3 +222,12 @@ RIFE 4.26 code/weights: https://github.com/hzwer/Practical-RIFE (MIT; LICENSE_RI
 Use MP4 and codec **auto** in Save Video to preserve the corrected stream without another encoding pass. The supplied standalone workflow writes to `output/DOGMA/SeedanceFix/Seedance_FIX_*.mp4`. Duration, fps, frame timestamps, dimensions, color depth and audio are checked by the repair engine. The uploaded source is not overwritten. The fix runs outside the async event loop; Stop cancels processing and removes that attempt's partial files. Intermediate output and diagnostics live in ComfyUI's temp directory, so cached results can be saved again without repeating inference.
 
 Existing API Platform, H3 and HDR workflows remain compatible. The same package supports Windows and the pod. No extra node pack is required.
+
+
+## Correggi scatti: precise MP4 timing / 1.0.59
+
+Fix the shared repair encoder used by API Platform's **Correggi scatti** switch and the standalone Seedance fix node. MP4's default 1000 Hz movie clock could truncate fractional-second clip ends and trigger "La durata del file corretto è cambiata", even with every frame and timestamp intact. For example, a 457-frame, 24 fps clip was rejected because the reported duration differed by eight video-clock ticks.
+
+Both the NVIDIA and software encoder now use the source video's time base for the MP4 movie and video track clocks. The strict checks on frame count, timestamps, duration, fps, dimensions, color depth and copied audio remain in place. This changes only the container timing; motion analysis, interpolation, quality gates and correction settings are unchanged. It adds no interpolation or encoding pass.
+
+When enabled, API Platform saves the generated original and a second locally processed copy in the existing project/scene workspace. Turning the switch off skips repair. Stop and real processing errors retain the original and report the outcome; an unsuccessful correction is never presented as repaired. Existing workflows and node IDs are compatible, with no new dependencies and the same code on Windows and the pod.

@@ -359,7 +359,12 @@ def _encoder(path, meta):
     for codec,pixel,options in candidates:
         container = None
         try:
-            container = av.open(str(path),'w',format='mp4',options={'movflags':'+faststart'})
+            # MP4's default 1000 Hz movie clock truncates fractional-frame ends
+            # in edit lists (e.g. 457/24 s became 19.041015625 s). Use the source
+            # clock for both the movie and video track; keep strict verification.
+            clock=str(Fraction(meta['time_base']).denominator)
+            container = av.open(str(path),'w',format='mp4',options={
+                'movflags':'+faststart','movie_timescale':clock,'video_track_timescale':clock})
             stream = container.add_stream(codec,rate=Fraction(meta['fps']))
             stream.width=meta['width'];stream.height=meta['height'];stream.pix_fmt=pixel;stream.options=options
             stream.time_base=Fraction(meta['time_base']);stream.codec_context.time_base=stream.time_base
