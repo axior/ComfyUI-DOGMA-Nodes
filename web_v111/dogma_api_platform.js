@@ -1,9 +1,9 @@
 import { app } from '../../scripts/app.js';
 import { api } from '../../scripts/api.js';
-import { PlatformUI } from './dogma_api_ui.js?v=1.0.61';
-import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.61';
+import { PlatformUI } from './dogma_api_ui.js?v=1.0.62';
+import { ALL_FAMILIES,copy,migrateState,activeReferences,inputSpec,viewParameters,parameterSpecs,modelValues } from './dogma_api_core.js?v=1.0.62';
 const ROOT=new URL('.',import.meta.url);
-const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.61',ROOT);document.head.append(css);
+const css=document.createElement('link');css.rel='stylesheet';css.href=new URL('dogma_api_platform.css?v=1.0.62',ROOT);document.head.append(css);
 let opened=null,queueLock=false;
 const cachedSchemas=fetch(new URL('dogma_api_schemas.json?v=1.0.57',ROOT)).then(r=>r.json()).catch(()=>({}));
 
@@ -70,13 +70,16 @@ class ComfyBridge {
  }
  async queue(compiled,batch,state){
   if(queueLock||app.processingQueue||app.queueItems?.length)throw new Error('Comfy sta già inviando una richiesta. Riprova tra un momento.');
-  queueLock=true;let result=null,used=false;const workflow=copy(app.graph.serialize());workflow.extra ||= {};workflow.extra.dogma_api_batch={session:state.session,id:batch,jobs:copy(compiled.jobs)};
+  queueLock=true;let result=null,used=false,queueError=null,build,capture;
   const nativeBuild=app.graphToPrompt,nativeQueue=api.queuePrompt;
-  const build=function(...args){if(used)return nativeBuild.apply(this,args);used=true;return Promise.resolve({workflow,output:compiled.output});};
-  const capture=async function(...args){const r=await nativeQueue.apply(this,args);if(args[1]?.workflow===workflow)result=r;return r;};
-  app.graphToPrompt=build;api.queuePrompt=capture;
-  try{await app.queuePrompt(0,1);if(!result?.prompt_id)throw new Error('Comfy non ha accettato il batch. Controlla accesso e messaggi di Comfy.');return result.prompt_id;}
-  finally{if(app.graphToPrompt===build)app.graphToPrompt=nativeBuild;if(api.queuePrompt===capture)api.queuePrompt=nativeQueue;queueLock=false;}
+  try{
+   const workflow=copy(app.graph.serialize());workflow.extra ||= {};workflow.extra.dogma_api_batch={session:state.session,id:batch,jobs:copy(compiled.jobs)};
+   build=function(...args){if(used)return nativeBuild.apply(this,args);used=true;return Promise.resolve({workflow,output:compiled.output});};
+   capture=async function(...args){try{const r=await nativeQueue.apply(this,args);if(args[1]?.workflow===workflow)result=r;return r;}catch(e){if(args[1]?.workflow===workflow)queueError=e;throw e;}};
+   app.graphToPrompt=build;api.queuePrompt=capture;
+   await app.queuePrompt(0,1);if(queueError)throw queueError;
+   if(!result?.prompt_id)throw new Error('Comfy non ha accettato il batch. Controlla accesso e messaggi di Comfy.');return result.prompt_id;
+  }finally{if(build&&app.graphToPrompt===build)app.graphToPrompt=nativeBuild;if(capture&&api.queuePrompt===capture)api.queuePrompt=nativeQueue;queueLock=false;}
  }
  subscribe(handler){const controller=new AbortController();for(const name of ['execution_start','executing','executed','execution_success','execution_error','execution_interrupted','progress','progress_state','dogma_video_repair'])api.addEventListener(name,e=>{let d=e.detail;if(name==='execution_start')this.activePrompt=d.prompt_id;if(name==='executing'&&(typeof d==='string'||d===null))d={node:d,prompt_id:this.activePrompt};handler(name,d);},{signal:controller.signal});return ()=>controller.abort();}
  async history(){const r=await api.fetchApi('/history?max_items=200');if(!r.ok)throw new Error('Cronologia non disponibile.');return r.json();}

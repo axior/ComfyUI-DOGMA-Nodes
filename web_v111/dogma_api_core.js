@@ -62,7 +62,36 @@ export function plannedJobs(s){const repeats=Number(s.runCount??1);if(!Number.is
 export const preparedMask=ref=>!!ref.process?.maskFile&&ref.process.samSource===ref.file&&ref.process.samPrompt===ref.process.prompt&&Number(ref.process.samSegment)===Number(ref.process.segment||0);
 export function visibleReferences(s){return s.references.filter(r=>(!r.modes||r.modes.includes(s.mode))&&(s.mode==='video'?(s.models.seedance?.engine==='frames'?r.kind==='image'&&['first','last'].includes(r.role):r.role!=='first'&&r.role!=='last'):r.kind!=='video'));}
 export function activeReferences(s){return visibleReferences(s).filter(r=>r.enabled);}
-export function validateState(s){
+export function mediaKind(file){
+ if(file.type?.startsWith('image/'))return 'image';if(file.type?.startsWith('video/'))return 'video';
+ if(file.type&&file.type!=='application/octet-stream')return null;
+ if(/\.(png|jpe?g|webp|avif|gif|bmp|tiff?)$/i.test(file.name||''))return 'image';
+ if(/\.(mp4|mov|m4v|webm|mkv|avi)$/i.test(file.name||''))return 'video';return null;
+}
+function dimensionError(f,fields,message){return Object.assign(new Error(`${f.name}: ${message}`),{family:f.key,fields});}
+function validateDimensions(f,p,specFor){
+ const seedream=f.key==='seedream',model=String(p.model||'').toLowerCase();
+ const modern=seedream&&(/5[.-]5/.test(model)||/5[.-]0.*(?:pro|flash)/.test(model));
+ const preset=seedream&&p['model.size_preset']&&p['model.size_preset']!=='Custom';
+ if(!preset)for(const [k,v] of Object.entries(p))if(/(?:width|height)$/.test(k)){
+  const info=specFor?.(f,k)?.[1]||{},n=Number(v);
+  const min=info.min??(seedream&&!/5[.-]5/.test(model)?1024:f.key==='gpt'?480:240);
+  const max=info.max??(seedream?(/5[.-]5/.test(model)?8594:modern?4514:k.endsWith('width')?6240:4992):f.key==='gpt'?3840:8594);
+  // Seedream's step=2 is a widget increment, not a server-side divisibility rule.
+  const step=seedream?1:f.key==='gpt'?16:2,label=k.split('.').at(-1).toUpperCase();
+  if(!Number.isInteger(n)||n<min||n>max||n%step)throw dimensionError(f,[k],`${label} = ${v}. Inserisci un intero da ${min} a ${max}${step>1?`, multiplo di ${step}`:''}.`);
+ }
+ if(!seedream)return;
+ const match=preset&&String(p['model.size_preset']).match(/(\d+)\s*[x×]\s*(\d+)/i);
+ // Presets retain native precedence over the unused Custom width and height.
+ const w=Number(match?match[1]:p['model.width']),h=Number(match?match[2]:p['model.height']);
+ if(preset&&!match)return;
+ const fields=preset?['model.size_preset']:['model.width','model.height'];
+ const pixels=w*h,min=modern||/4[.-]0/.test(model)?921600:3686400,max=modern?4624220:16777216;
+ if(pixels<min||pixels>max)throw dimensionError(f,fields,`${p.model}: ${w} × ${h} = ${(pixels/1e6).toFixed(2)} MP. Il modello richiede da ${(min/1e6).toFixed(2)} a ${(max/1e6).toFixed(2)} MP. Correggi ${preset?'SIZE PRESET':'WIDTH / HEIGHT'} e premi Run.`);
+ if(/5[.-]5/.test(model)&&(w/h<1/16||w/h>16))throw dimensionError(f,fields,`${w} × ${h}: rapporto consentito da 1:16 a 16:1. Correggi ${preset?'SIZE PRESET':'WIDTH / HEIGHT'} e premi Run.`);
+}
+export function validateState(s,specFor){
  if(!s.prompts[s.mode]?.trim())throw new Error('Scrivi un prompt.');
  if(!plannedJobs(s).length)throw new Error('Attiva almeno un modello.');
  const refs=activeReferences(s),imgs=refs.filter(r=>r.kind==='image'),videos=refs.filter(r=>r.kind==='video');
@@ -82,14 +111,11 @@ export function validateState(s){
  }
  for(const f of families(s)){
   const m=s.models[f.key];if(!m.enabled)continue;const p=m.engine==='frames'?m.frames:m.parameters;
-  for(const [k,v] of Object.entries(p))if(/(?:width|height)$/.test(k)){
-   const n=Number(v),min=f.key==='gpt'?480:240,max=f.key==='gpt'?3840:8594,step=f.key==='gpt'?16:2;
-   if(!Number.isInteger(n)||n<min||n>max||n%step)throw new Error(`${f.name}: dimensioni da ${min} a ${max}, multiple di ${step}.`);
-  }
+  validateDimensions(f,p,specFor);
  }
 }
-export function compileBatch(s,jobs,baseSeed){
- validateState(s);const output={},refs=activeReferences(s),images=[],videos=[];
+export function compileBatch(s,jobs,baseSeed,specFor){
+ validateState(s,specFor);const output={},refs=activeReferences(s),images=[],videos=[];
  refs.forEach((ref,i)=>{
   const id=String(9000+i*10);output[id]={class_type:ref.kind==='video'?'LoadVideo':'LoadImage',inputs:{[ref.kind==='video'?'file':'image']:ref.file}};
   if(ref.kind==='video'){videos.push({ref,link:[id,0]});return;}

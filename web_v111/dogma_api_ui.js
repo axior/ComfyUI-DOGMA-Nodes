@@ -1,4 +1,4 @@
-import {ALL_FAMILIES,copy,families,orderedFamilies,plannedJobs,compileBatch,validateState,titleParts,todayCode,filterResults,migrateState,activeReferences,visibleReferences,choicesFor,sortedChoices,safeName,orderResults,savedFilename,preparedMask} from './dogma_api_core.js?v=1.0.61';
+import {ALL_FAMILIES,copy,families,orderedFamilies,plannedJobs,compileBatch,validateState,titleParts,todayCode,filterResults,migrateState,activeReferences,visibleReferences,choicesFor,sortedChoices,safeName,orderResults,savedFilename,preparedMask,mediaKind} from './dogma_api_core.js?v=1.0.62';
 import {icon} from './dogma_api_icons.js?v=1.0.57';
 import {hoverCompare,openViewer} from './dogma_api_viewer.js?v=1.0.60';
 import {modelReorder} from './dogma_api_model_order.js?v=1.0.61';
@@ -18,7 +18,7 @@ export class PlatformUI {
   this.root=el('dialog','','dap');this.root.setAttribute('aria-label','DOGMA API Platform');
   this.root.addEventListener('cancel',e=>{e.preventDefault();this.close();});
   this.root.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('Files'))e.preventDefault();});
-  this.root.addEventListener('drop',e=>{e.preventDefault();if(e.dataTransfer.files.length)this.addReferences([...e.dataTransfer.files]);});
+  this.root.addEventListener('drop',e=>this.dropReferences(e));
   document.body.append(this.root);this.build();this.root.tabIndex=-1;this.root.showModal();this.root.focus({preventScroll:true});
   this.unsubscribe=this.bridge.subscribe?.((name,d)=>this.event(name,d));
   this.note('Apertura · Collegamento a Comfy…');
@@ -117,7 +117,39 @@ export class PlatformUI {
   const frames=this.state.mode==='video'&&this.state.models.seedance.engine==='frames',mixed=this.state.mode==='video'&&!frames;const add=ib('plus',mixed?'Aggiungi immagini o video':'Aggiungi immagine',()=>this.pickReferences(),'dap-add');const hoverIcon=icon(mixed?'media':'image');hoverIcon.classList.add('dap-add-hover');add.append(hoverIcon);if(!frames||visible.length<2)this.refs.append(add);
  }
  pickReferences(replace=null){const i=el('input');i.type='file';i.accept=this.state.mode==='video'&&this.state.models.seedance.engine!=='frames'?'image/*,video/*':'image/*';i.multiple=!replace;i.hidden=true;this.root.append(i);i.onchange=()=>{this.addReferences([...i.files],replace);i.remove();};i.addEventListener('cancel',()=>i.remove(),{once:true});i.click();}
- async addReferences(files,replace=null){try{this.note('Caricamento reference…');for(const file of files){if(!/^(image|video)\//.test(file.type))throw new Error('Scegli immagini o video.');const frames=this.state.mode==='video'&&this.state.models.seedance.engine==='frames';if(file.type.startsWith('video/')&&(this.state.mode==='image'||frames))throw new Error('In questa modalità puoi caricare solo immagini.');if(frames&&!replace&&visibleReferences(this.state).length>=2)throw new Error('First / Last frame accetta due immagini.');const uploaded=await this.bridge.upload(file);if(this.closed)return;const r={...uploaded,enabled:true,modes:[this.state.mode],role:frames?(replace?.role|| (visibleReferences(this.state).some(r=>r.role==='first')?'last':'first')):'reference',process:{enabled:false,mask:false,maskMode:'edit',source:'paint',flip:false,invert:false,crop:false,fillHoles:false,expand:0,blur:0,targetWidth:0,targetHeight:0,background:'#ff00ff'}};if(replace){const at=this.state.references.indexOf(replace);this.state.references.splice(at,1,r);}else this.state.references.push(r);}this.save();this.renderRefs();this.refreshPrices();this.note('Reference aggiornate. L’ordine è quello mostrato.');}catch(e){this.note(e.message,true);}}
+ dropReferences(e){
+  const files=[...(e.dataTransfer?.files||[])];if(!files.length)return;
+  e.preventDefault();e.stopPropagation();
+  const tile=e.target.closest?.('.dap-ref'),replace=tile&&this.refs?.contains(tile)?visibleReferences(this.state)[Number(tile.dataset.ref)]:null;
+  return this.addReferences(files,replace);
+ }
+ async addReferences(files,replace=null){
+  if(!files.length)return;
+  try{
+   const mode=this.state.mode,engine=this.state.models.seedance?.engine,frames=mode==='video'&&engine==='frames';
+   const kinds=files.map(mediaKind);
+   if(kinds.some(k=>!k))throw new Error('Scegli immagini o video.');
+   if(kinds.includes('video')&&(mode==='image'||frames))throw new Error('In questa modalità puoi caricare solo immagini.');
+   if(replace&&!this.state.references.includes(replace))throw new Error('La reference da sostituire non è più presente.');
+   if(frames&&visibleReferences(this.state).length+files.length-(replace?1:0)>2)throw new Error('First / Last frame accetta due immagini.');
+   this.note(replace?'Sostituzione reference…':'Caricamento reference…');
+   const uploaded=[];for(const file of files)uploaded.push(await this.bridge.upload(file));
+   if(this.closed)return;
+   if(this.state.mode!==mode||this.state.models.seedance?.engine!==engine)throw new Error('Modalità cambiata durante il caricamento. Rilascia nuovamente i file.');
+   const at=replace?this.state.references.indexOf(replace):-1;
+   if(replace&&at<0)throw new Error('La reference da sostituire è stata rimossa. Rilascia nuovamente il file.');
+   if(frames&&visibleReferences(this.state).length+files.length-(replace?1:0)>2)throw new Error('First / Last frame accetta due immagini.');
+   const roles=new Set(visibleReferences(this.state).filter(r=>r!==replace).map(r=>r.role));
+   const incoming=uploaded.map((item,i)=>{
+    const previous=i===0?replace:null,role=previous?.role||(frames?(!roles.has('first')?'first':'last'):'reference');roles.add(role);
+    return {...item,kind:kinds[i],enabled:previous?.enabled??true,modes:previous?.modes?[...previous.modes]:[mode],role,
+     process:{enabled:false,mask:false,maskMode:'edit',source:'paint',flip:false,invert:false,crop:false,fillHoles:false,expand:0,blur:0,targetWidth:0,targetHeight:0,background:'#ff00ff'}};
+   });
+   if(replace){this.state.references.splice(at,1,incoming[0]);this.state.references.push(...incoming.slice(1));}
+   else this.state.references.push(...incoming);
+   this.save();this.renderRefs();this.refreshPrices();this.note(replace?'Reference sostituita.':'Reference aggiornate. L’ordine è quello mostrato.');
+  }catch(e){this.note(e.message,true);}
+ }
  referenceVideo(ref){openViewer(this,{job:{kind:'video',label:ref.file,study:true},file:{url:ref.preview||this.bridge.view(ref.file)},index:0});}
  model(f){
   const m=this.state.models[f.key],wrap=el('div','','dap-model'),row=el('div','','dap-model-head');wrap.dataset.modelKey=f.key;wrap.setAttribute('role','group');wrap.setAttribute('aria-label',f.name);
@@ -139,7 +171,7 @@ export class PlatformUI {
    const spec=this.bridge.inputSpec?.(this.state,f,key);
    if(spec){const info=spec[1]||{};if(Array.isArray(spec[0]))opts.choices=spec[0];else if(choicesFor(spec))opts.choices=choicesFor(spec);if(info.min!==undefined)opts.min=info.min;if(info.max!==undefined)opts.max=info.max;if(info.step!==undefined)opts.step=info.step;}
    if(opts.choices){opts.choices=sortedChoices(key,opts.choices);delete opts.readonly;}
-   this.field(body,displayName(key),value,v=>{values[key]=typeof value==='boolean'?v:typeof value==='number'?Number(v):v;if(key==='model'){this.bridge.changeModel?.(this.state,f);this.renderControls();}this.save();this.refreshPrices();},opts);
+   this.field(body,displayName(key),value,v=>{values[key]=typeof value==='boolean'?v:typeof value==='number'?Number(v):v;if(key==='model'){this.bridge.changeModel?.(this.state,f);this.renderControls();}this.save();this.refreshPrices();this.recheckValidation();},opts);
   }
   if(values.system_prompt!==undefined){const advanced=el('details','','dap-advanced');advanced.append(el('summary','SYSTEM PROMPT'));const text=el('textarea');text.value=values.system_prompt;text.setAttribute('aria-label',f.name+' system prompt');text.oninput=()=>{values.system_prompt=text.value;this.save();};advanced.append(text);body.append(advanced);}
   if(f.key==='seedance')body.append(el('div',m.engine==='frames'?'Usa un First frame, un Last frame o entrambi. Sono accettate soltanto immagini.':'Usa immagini o video come reference. In Edit la durata segue il video sorgente.','dap-field-hint'));
@@ -267,11 +299,32 @@ export class PlatformUI {
   this.save();this.updateCards();this.note(results.some(r=>r.status==='rejected')?'Una richiesta di stop non è riuscita. Riprova.':'Stop inviato a Comfy. Le richieste già completate dal servizio possono essere addebitate.',results.some(r=>r.status==='rejected'));
  }
  async refreshLibrary(){if(!this.bridge.library||this.closed)return;try{this.library=await this.bridge.library();if(this.closed)return;for(const r of this.library.filter(r=>r.imported)){const existing=this.state.results.find(j=>j.id===r.id);if(existing)Object.assign(existing,r);}this.renderFilters();this.renderGallery();}catch(e){this.note('Libreria temporaneamente non disponibile.',true);}}
+ clearValidation(){
+  this.validationError=null;for(const input of this.controls?.querySelectorAll('[aria-invalid="true"]')||[])input.removeAttribute('aria-invalid');
+ }
+ reportValidation(error,focus=true){
+  this.clearValidation();this.validationError=error;this.note(error.message,true);
+  if(!error.family)return;
+  const model=[...(this.controls?.querySelectorAll('.dap-model')||[])].find(e=>e.dataset.modelKey===error.family);if(!model)return;
+  const fields=new Set((error.fields||[]).map(displayName)),inputs=[...model.querySelectorAll('input,select')].filter(e=>fields.has(e.getAttribute('aria-label')));
+  for(const input of inputs)input.setAttribute('aria-invalid','true');
+  if(focus){model.querySelector('details').open=true;this.state.models[error.family].expanded=true;this.save();
+   if(inputs[0]){inputs[0].focus({preventScroll:true});inputs[0].scrollIntoView({block:'center',inline:'nearest'});}
+  }
+ }
+ recheckValidation(){
+  if(!this.validationError)return;
+  try{validateState(this.state,(f,k)=>this.bridge.inputSpec?.(this.state,f,k));this.clearValidation();this.note('Parametri validi. Premi Run per generare.');}
+  catch(e){this.reportValidation(e,false);}
+ }
  async run(){
-  if(this.busy)return;try{validateState(this.state);}catch(e){this.note(e.message,true);return;}
-  this.stopRequested=false;this.busy=true;this.updateHeader();const snapshot=copy(this.state),batch=crypto.randomUUID(),started=Date.now();
-  const jobs=plannedJobs(snapshot).map((p,ordinal)=>({...p,id:crypto.randomUUID(),batch,started,batchStarted:started,ordinal,status:'submitting',images:[]}));
+  if(this.busy||!this.ready)return;const specFor=(f,k)=>this.bridge.inputSpec?.(this.state,f,k);
+  try{validateState(this.state,specFor);}catch(e){this.reportValidation(e);return;}
+  this.clearValidation();let jobs=[];
   try{
+   this.stopRequested=false;this.busy=true;this.pendingEvents=[];this.updateHeader();
+   const snapshot=copy(this.state),batch=crypto.randomUUID(),started=Date.now();
+   jobs=plannedJobs(snapshot).map((p,ordinal)=>({...p,id:crypto.randomUUID(),batch,started,batchStarted:started,ordinal,status:'submitting',images:[]}));
    const primary=activeReferences(snapshot).find(r=>r.kind==='image');
    for(const ref of activeReferences(snapshot).filter(r=>r.kind==='image'&&r.process?.enabled)){
     if((ref.process.source==='prompt'&&ref.process.mask)||(ref===primary&&snapshot.mode==='image'&&snapshot.imageEdit)){
@@ -279,11 +332,11 @@ export class PlatformUI {
      if(prepared.maskFile)Object.assign(ref.process,{maskFile:prepared.maskFile,samSource:prepared.samSource,samPrompt:prepared.samPrompt,samSegment:prepared.samSegment});
     }
    }
-   const seed=new Uint32Array(1);crypto.getRandomValues(seed);const compiled=compileBatch(snapshot,jobs,seed[0]%2147483647);
+   const seed=new Uint32Array(1);crypto.getRandomValues(seed);const compiled=compileBatch(snapshot,jobs,seed[0]%2147483647,(f,k)=>this.bridge.inputSpec?.(snapshot,f,k));
    this.note('Controllo reference e nodi…');await this.bridge.check(snapshot,compiled);if(this.closed||this.stopRequested)return;
    this.state.results.push(...jobs);this.save();this.renderFilters();this.renderGallery();this.galleryViewport.scrollTop=0;
    const promptId=await this.bridge.queue(compiled,batch,this.state);for(const job of jobs){job.promptId=promptId;if(job.status==='submitting')job.status='queued';}for(const [name,d] of this.pendingEvents||[])this.event(name,d);this.pendingEvents=[];if(this.stopRequested)await this.stop();this.save();this.updateCards();this.note(`${jobs.length} generazioni indipendenti inviate in un unico batch parallelo.`);
-  }catch(e){for(const j of jobs){if(!terminal.has(j.status)){j.stoppedProgress=this.jobProgress(j).percent;j.status='failed';j.error=e.message;j.finished=Date.now();j.errorVisibleUntil=Date.now()+5000;}}this.save();this.updateCards();this.note(e.message,true);}finally{this.busy=false;if(!this.closed)this.updateHeader();}
+  }catch(e){for(const j of jobs){if(!terminal.has(j.status)){j.stoppedProgress=this.jobProgress(j).percent;j.status='failed';j.error=e.message;j.finished=Date.now();j.errorVisibleUntil=Date.now()+5000;}}this.save();this.updateCards();this.reportValidation(e);}finally{this.busy=false;this.pendingEvents=[];if(!this.closed)this.updateHeader();}
  }
  event(name,d){
   if(name==='dogma_video_repair'){const job=this.state.results.find(j=>j.id===d?.job_id);if(job&&!terminal.has(job.status)){job.status='repairing';job.repairProgress=d.value;job.repairStage=d.stage;this.save();this.updateCards();}return;}

@@ -200,3 +200,6 @@
 .dap-models-sortable>.dap-model>.dap-model-head>details>summary{cursor:grab;user-select:none}
 .dap-models-sortable>.dap-model>.dap-model-head>details>summary:active{cursor:grabbing}
 .dap-model-dragging{opacity:.55}
+
+/* Explain validation in the affected field without adding permanent controls. */
+.dap-field:has([aria-invalid="true"]){outline:1px solid var(--orange);outline-offset:-1px}

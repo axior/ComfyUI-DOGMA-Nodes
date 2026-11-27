@@ -247,3 +247,12 @@ Drag an existing model heading up or down to change the order of the blocks unde
 The visible switches in model headings, Image Edit, the date row and video repair align with the left edge of the Image/Video tabs and section dividers. Their existing click targets and text positions are preserved; switches inside reference thumbnails and parameter fields keep their own inset.
 
 Generation quantities and seeds, API execution, video repair behavior and existing workflow identifiers remain unchanged. Previous workflows load with their original model order.
+
+
+## Seedream Custom dimensions and reference replacement / 1.0.62
+
+Seedream Custom dimensions such as **2816 × 1485** are submitted exactly as entered. The previous DOGMA check incorrectly treated the native widget's increment of 2 as a mandatory divisibility rule. Selecting a size preset now validates that preset, rather than the unused Custom values. Current Seedream pixel-count and aspect-ratio limits are checked before submission; errors identify and reveal the affected fields. Correcting a value allows Run to be retried without reopening Comfy. Submission cleanup also restores the queue hooks and releases the DOGMA lock after preparation or queue failures. No automatic retries or dimension rounding are introduced.
+
+Drop an image or video file directly on an existing reference thumbnail to replace that slot. Drops elsewhere keep adding references. If multiple files are dropped onto a thumbnail, the first replaces it and the remaining files are added. Replacement preserves position, enabled state, modes and First/Last role; old masks, crops and previews are discarded because they belong to the previous file. A failed upload leaves the old reference intact. Image-only modes still reject video, and First/Last mode still permits at most two images.
+
+Existing workflow JSON, model ordering, compare controls and video-repair behavior remain unchanged.
